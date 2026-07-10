@@ -1,0 +1,20 @@
+[project]
+name = "iFLM Slice Interpolator 2"
+
+[tool.pyside6-project]
+files = [
+    "iflm_slice_interpolator.py",
+    "qml_resources/AppConfig.qml",
+    "qml_resources/ImageFilterGB.qml",
+    "qml_resources/ImageStackOriginGB.qml",
+    "qml_resources/InterpolationGB.qml",
+    "qml_resources/SpinBoxDouble.qml",
+    "qml_resources/StatusGB.qml",
+    "qml_resources/main.qml",
+    "qml_resources/qmldir",
+    "qml_resources/qtquickcontrols2.conf",
+    "script_assets/catbug_color_2.png",
+    "script_assets/catbug_color_2.svg",
+    "script_assets/catbug_grayscale_2.png",
+    "script_assets/catbug_grayscale_2.svg",
+    ]

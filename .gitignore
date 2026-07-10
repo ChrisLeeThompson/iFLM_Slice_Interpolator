@@ -1,0 +1,14 @@
+# Python build artifacts
+__pycache__/
+*.pyc
+
+# IDE / Qt Creator user state
+.qtcreator/*.user
+*.pyproject.user
+
+# Claude Code session metadata
+.claude/
+
+# Virtual environments
+.venv/
+venv/

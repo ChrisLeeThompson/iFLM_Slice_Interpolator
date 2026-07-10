@@ -1,0 +1,646 @@
+# This Python file uses the following encoding: utf-8
+"""
+iFLM Slice Interpolator
+.
+This script / UI will process and interpolate image files generated from Thermo Scientific iFLM software.
+.
+The selected iFLM generated TFS XML file is parced and the referenced images are then processed.
+A directory of processed images is created in the root directory of the original TFS XML file.
+A new TFS XML file is generated in the root directory of the original TFS XML file.
+The new TFS XML file can be loaded in TFS Maps software.
+.
+If you are using Thermo Scientific AutoScript 4.13+, this script should function without additional dependencies.
+.
+Much of the code was written with the assistance of ClaudeAI.
+If you have any questions, comments, or suggestions, please contact Chris Thompson (GitHub: ChrisLeeThompson).
+.
+July 10th, 2026
+.
+.
+MIT License
+.
+Copyright 2026 Christopher Thompson
+.
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the “Software”),
+to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+.
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+.
+THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+"""
+import sys
+import logging
+import os
+import shutil
+import traceback
+from pathlib import Path
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtCore import (QObject, Signal, Slot, Property,
+                            QThread, QUrl)
+from python_resources import __version__
+from python_resources.processing_params import ProcessingParams
+from python_resources.processing_config import (
+    IMAGE_FILTER_METHODS, INTERPOLATION_METHODS,
+    get_filter_method_names, get_interpolation_method_names,
+    get_interpolation_method_descriptions
+)
+from python_resources.worker_thread import ProcessingWorker
+from python_resources.tfs_file_parser import TFSFileParser
+from python_resources.tfs_file_generator import (
+    PROCESSED_IMAGES_DIR_NAME, get_interpolated_tfs_path
+)
+
+
+logger = logging.getLogger(__name__)
+
+
+class MainOperator(QObject):
+
+    # Signals
+    tfs_file_path_signal: Signal = Signal(str)
+    tfs_file_path_valid_signal: Signal = Signal(bool)
+    processed_data_exists_signal: Signal = Signal(bool)
+    processing_running_signal: Signal = Signal(bool)
+    operator_to_statusGB_signal: Signal = Signal(str)
+    operator_to_progressBar_visible_signal: Signal = Signal(bool)
+    operator_to_progressBar_value_signal: Signal = Signal(int)
+
+    def __init__(self):
+        super().__init__()
+        # TFS file state
+        self._tfs_file_path: str = ""
+        self._tfs_file_valid: bool = False
+        self._processed_data_exists: bool = False
+
+        # Processing state
+        self._processing_running: bool = False
+        self._operator_to_statusGB: str = ""
+        self._operator_to_progressBar_visible: bool = False
+        self._operator_to_progressBar_value: int = 0
+
+        # Processing parameters
+        self._params = ProcessingParams(
+            image_filter_method_index=0,
+            interpolation_method_index=0,
+            gaussian_background_sigma=50,
+            unsharp_kernel_size=3,
+            unsharp_gaussian_sigma=0.5,
+            unsharp_amount=7.0,
+            interpolation_factor=2,
+            save_as_stack=True,
+            global_background_normalization=False
+        )
+
+        # Worker / thread references - kept alive for the duration of the run
+        self._worker: ProcessingWorker | None = None
+        self._thread: QThread | None = None
+    
+    ### ====================
+    ### Setup QML properties
+    
+    def _get_tfs_file_path(self):
+        """File path to the TFS XML file."""
+        return self._tfs_file_path
+    
+    tfs_file_path_property = Property(str, fget=_get_tfs_file_path, notify=tfs_file_path_signal)
+
+    def _get_tfs_file_valid(self):
+        """Validation boolean if the TFS XML file exists at the specified path and has a .xml file extension."""
+        return self._tfs_file_valid
+    
+    tfs_file_valid_property = Property(bool, fget=_get_tfs_file_valid, notify=tfs_file_path_valid_signal)
+
+    def _get_processed_data_exists(self):
+        """Boolean for the existence of the processed data. True if an interpolated TFS file exists and/or processed_data directory exists."""
+        return self._processed_data_exists
+    
+    processed_data_exists_property = Property(bool, fget=_get_processed_data_exists, notify=processed_data_exists_signal)
+
+    def _get_processing_running(self):
+        """Boolean for the processing state. True if processing is running."""
+        return self._processing_running
+    
+    processing_running_property = Property(bool, fget=_get_processing_running, notify=processing_running_signal)
+
+    def _get_operator_to_statusGB(self):
+        """Send strings to the Status GB status label."""
+        return self._operator_to_statusGB
+    
+    operator_to_statusGB_property = Property(str, fget=_get_operator_to_statusGB, notify=operator_to_statusGB_signal)
+
+    def _get_operator_to_progressBar_visible(self):
+        """Visibility state for the progress bar."""
+        return self._operator_to_progressBar_visible
+
+    operator_to_progressBar_visible_property = Property(bool, fget=_get_operator_to_progressBar_visible, notify=operator_to_progressBar_visible_signal)
+
+    def _get_operator_to_progressBar_value(self):
+        """Current value for the progress bar (0-100)."""
+        return self._operator_to_progressBar_value
+
+    operator_to_progressBar_value_property = Property(int, fget=_get_operator_to_progressBar_value, notify=operator_to_progressBar_value_signal)
+    
+    ### =======================
+    ### Methods called from QML
+
+    @Slot(str)
+    def set_tfs_file_path(self, path: str):
+        """Set and validate the TFS file path.  Accepts plain paths or file:// URLs."""
+        # QML file dialogs and drag-and-drop deliver file:// URLs.  QUrl handles
+        # percent-encoding and UNC shares (file://server/share) correctly, unlike
+        # stripping the prefix by hand.
+        if path.startswith("file:"):
+            path = QUrl(path).toLocalFile()
+
+        file_path = Path(path)
+
+        # Validation.  On rejection, previously loaded state is left untouched
+        # (a bad drop should not invalidate an already-selected file) and the
+        # user gets feedback in the status label.
+        if not file_path.exists():
+            logger.error(f"TFS file does not exist: {file_path}")
+            self._update_operator_to_statusGB(f"File not found: {file_path.name or path}")
+            return
+
+        if not file_path.suffix.lower() in [".xml"]:
+            logger.error(f"Invalid file type. Expected .xml, got: {file_path.suffix}")
+            self._update_operator_to_statusGB(f"Not an .xml file: {file_path.name}")
+            return
+
+        # File is valid - update paths
+        self._tfs_file_path = str(file_path)
+        self._tfs_file_valid = True
+
+        # Emit signals to update QML
+        self.tfs_file_path_signal.emit(self._tfs_file_path)
+        self.tfs_file_path_valid_signal.emit(True)
+
+        # Check if processed data already exists
+        self._check_processed_data_exists()
+
+        logger.info(f"TFS file path set and validated: {self._tfs_file_path}")
+    
+    @Slot(int)
+    def _set_image_filter_method_index(self, index: int):
+        """Update image filter method index."""
+        self._params.image_filter_method_index = index
+
+        # Validate index and log using the registry directly
+        if 0 <= index < len(IMAGE_FILTER_METHODS):
+            logger.info(f"Image filter method: {IMAGE_FILTER_METHODS[index].name} (index: {index})")
+        else:
+            logger.error(f"Invalid image filter method index: {index}")
+    
+    @Slot(int)
+    def _set_gaussian_background_sigma(self, sigma: int):
+        """Update gaussian background sigma."""
+        self._params.gaussian_background_sigma = sigma
+        logger.info(f"Gaussian background sigma: {self._params.gaussian_background_sigma}")
+    
+    @Slot(bool)
+    def _set_global_background_normalization(self, enabled: bool):
+        """Update global background normalization flag."""
+        self._params.global_background_normalization = enabled
+        logger.info(f"Global background normalization: {self._params.global_background_normalization}")
+    
+    @Slot(int)
+    def _set_unsharp_kernel_size(self, kernel_size: int):
+        """Update the unsharp kernel size."""
+        self._params.unsharp_kernel_size = kernel_size
+        if kernel_size == 0:
+            logger.info(f"Unsharp kernel size: 0 (automatically calculated)")
+        else:
+            logger.info(f"Unsharp kernel size: {kernel_size}x{kernel_size}")
+    
+    @Slot(float)
+    def _set_unsharp_amount(self, unsharp_amount: float):
+        """Update unsharp amount."""
+        self._params.unsharp_amount = unsharp_amount
+        logger.info(f"Unsharp amount: {self._params.unsharp_amount}")
+    
+    @Slot(float)
+    def _set_unsharp_gaussian_sigma(self, sigma: float):
+        """Update unsharp gaussian sigma."""
+        self._params.unsharp_gaussian_sigma = sigma
+        logger.info(f"Unsharp gaussian sigma: {self._params.unsharp_gaussian_sigma}")
+    
+    @Slot(int)
+    def _set_interpolation_method_index(self, index: int):
+        """Update interpolation method index."""
+        self._params.interpolation_method_index = index
+
+        # Validate index and log using the registry directly
+        if 0 <= index < len(INTERPOLATION_METHODS):
+            logger.info(f"Interpolation method: {INTERPOLATION_METHODS[index].name} (index: {index})")
+        else:
+            logger.error(f"Invalid interpolation method index: {index}")
+    
+    @Slot(int)
+    def _set_interpolation_factor(self, interpolation_factor: int):
+        """Update interpolation factor."""
+        self._params.interpolation_factor = interpolation_factor
+        logger.info(f"Interpolation factor: {self._params.interpolation_factor}")
+    
+    @Slot()
+    def delete_processed_data(self):
+        """Delete the processed_imaged directory and interpolated TFS file."""
+        if not self._tfs_file_path:
+            logger.warning("No TFS file selected.")
+            return
+        
+        tfs_path = Path(self._tfs_file_path)
+        processed_dir = tfs_path.parent / PROCESSED_IMAGES_DIR_NAME
+
+        # Get interpolated TFS file path
+        interpolated_tfs_file = self._get_interpolated_tfs_path()
+
+        deleted_items = []
+
+        # Delete processed images directory
+        if processed_dir.exists():
+            try:
+                logger.info(f"Deleting processed data directory: {processed_dir}")
+                shutil.rmtree(processed_dir)
+                deleted_items.append("processed images")
+                logger.info("Processed images directory deleted successfully.")
+            except Exception:
+                logger.error(f"Failed to delete processed images directory", exc_info=True)
+        
+        # Delete interpolated TFS file
+        if interpolated_tfs_file and interpolated_tfs_file.exists():
+            try:
+                logger.info(f"Deleting interpolated TFS file: {interpolated_tfs_file.name}")
+                interpolated_tfs_file.unlink()
+                deleted_items.append("TFS file")
+                logger.info("Interpolated TFS file deleted successfully.")
+            except Exception:
+                logger.error(f"Failed to delete interpolated TFS file.", exc_info=True)
+        
+        # Update status
+        if deleted_items:
+            status = f"Deleted: {', '.join(deleted_items)}"
+            self._update_operator_to_statusGB(status)
+            logger.info(status)
+        else:
+            logger.warning("No processed data to delete.")
+        
+        # Update property to disable button
+        self._check_processed_data_exists()
+    
+    @Slot()
+    def start_processing(self):
+        """Start processing images with a background thread. Called when the user clicks the Start button."""
+        if not self._tfs_file_valid or not self._tfs_file_path:
+            self._update_operator_to_statusGB("No valid TFS file selected")
+            logger.warning("Start processing called with no valid TFS file.")
+            return
+        
+        if self._processing_running:
+            logger.warning("Start processing called while already running.")
+            return
+
+        # Parse TFS file
+        self._update_operator_to_statusGB("Parsing TFS file...")
+        try:
+            tfs_parser = TFSFileParser(Path(self._tfs_file_path))
+            channels = tfs_parser.get_channels()
+            if not channels:
+                self._update_operator_to_statusGB("Error: no channels found")
+                logger.error("TFS file parsed but no channels found.")
+                return
+            logger.info(f"Parsed TFS file: {len(channels)} channels found.")
+        except Exception:
+            self._update_operator_to_statusGB("Error parsing TFS file")
+            logger.error("Failed to parse TFS file.", exc_info=True)
+            return
+        
+        # Resolve method objects from the registry
+        try:
+            filter_method = IMAGE_FILTER_METHODS[self._params.image_filter_method_index]
+            interp_method = INTERPOLATION_METHODS[self._params.interpolation_method_index]
+        except IndexError:
+            self._update_operator_to_statusGB("Error: invalid method selection")
+            logger.error(
+                f"Invalid method index (filter: {self._params.image_filter_method_index}, "
+                f"interpolation: {self._params.interpolation_method_index})"
+            )
+            return
+
+        # Validate the stacks before doing any work - catches problems that
+        # would otherwise crash mid-run or corrupt the generated TFS file.
+        validation_error = self._validate_channels(tfs_parser, interp_method)
+        if validation_error:
+            self._update_operator_to_statusGB(validation_error)
+            logger.error(validation_error)
+            return
+
+        # Create output directory
+        output_base_dir = Path(self._tfs_file_path).parent / PROCESSED_IMAGES_DIR_NAME
+        try:
+            output_base_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            self._update_operator_to_statusGB(f"Error: cannot create output directory: {output_base_dir}")
+            logger.error(f"Failed to create output directory: {output_base_dir}", exc_info=True)
+            return
+
+        # Create worker thread
+        self._thread = QThread()
+        self._worker = ProcessingWorker(
+            tfs_parser=tfs_parser,
+            filter_method=filter_method,
+            interp_method=interp_method,
+            unsharp_ksize=self._params.get_unsharp_ksize_tuple(),
+            gaussian_sigma=self._params.gaussian_background_sigma,
+            unsharp_sigma=self._params.unsharp_gaussian_sigma,
+            unsharp_amount=self._params.unsharp_amount,
+            interpolation_factor=self._params.interpolation_factor,
+            global_background_normalization=self._params.global_background_normalization,
+            save_as_stack=self._params.save_as_stack,
+            output_base_dir=output_base_dir,
+        )
+
+        # Move worker to background thread
+        self._worker.moveToThread(self._thread)
+
+        # Connect signals
+        self._thread.started.connect(self._worker.run)
+        self._worker.status_update.connect(self._on_worker_status_update)
+        self._worker.progress_update.connect(self._on_worker_progress_update)
+        self._worker.finished.connect(self._on_worker_finished)
+        self._worker.stopped.connect(self._on_worker_stopped)
+        self._worker.error.connect(self._on_worker_error)
+
+        # Clean up when worker is finished
+        self._worker.finished.connect(self._thread.quit)
+        self._worker.stopped.connect(self._thread.quit)
+        self._worker.error.connect(self._thread.quit)
+        self._thread.finished.connect(self._thread.deleteLater)
+        self._thread.finished.connect(self._worker.deleteLater)
+        # Clear our references only once the thread has actually finished.
+        # Clearing them from the worker-signal handlers would drop the last
+        # Python reference to a still-running QThread, which deletes the C++
+        # object and aborts the process (QThread destroyed while running).
+        self._thread.finished.connect(self._clear_worker_refs)
+
+        # Update status and start
+        self._processing_running = True
+        self.processing_running_signal.emit(True)
+        self._update_operator_to_progressBar_visible(True)
+        self._update_operator_to_progressBar_value(0)
+
+        self._thread.start()
+        logger.info("Worker thread started.")
+    
+    @Slot()
+    def stop_processing(self):
+        """Called from QML when the user clicks the Stop button."""
+        if self._worker:
+            self._worker.request_stop()
+            logger.info("Stop requested...")
+        else:
+            logger.warning("Stop processing called but no worker exists.")
+
+    ### ==================
+    ### Supporting methods
+
+    def _validate_channels(self, tfs_parser: TFSFileParser, interp_method) -> str | None:
+        """
+        Check that every channel in the TFS file can actually be processed.
+
+        Catches upfront what would otherwise fail mid-run or silently corrupt
+        the generated TFS file: unparseable <Image> entries (a dropped entry
+        silently shifts z-planes), stacks too short for the selected spline
+        order, and unequal slice counts across channels (the generator
+        requires equal counts).  Channels with no images at all are allowed -
+        the worker and generator both skip them.
+
+        Metadata-only on purpose: no per-file disk I/O here, since stat'ing
+        hundreds of TIFFs on a network share would freeze the GUI thread.
+        Missing files are caught by the worker's fail-fast sweep, which runs
+        on the background thread before any output is written.
+
+        :param tfs_parser: Parser for the selected TFS file
+        :param interp_method: Selected InterpolationMethod (its k sets the minimum stack size)
+        :return: A user-facing error message, or None if everything checks out
+        """
+        tfs_parser.get_images()  # ensure parsing happened so dropped_images is populated
+        n_dropped = len(tfs_parser.dropped_images)
+        if n_dropped:
+            noun = "entry" if n_dropped == 1 else "entries"
+            return (f"Error: {n_dropped} image {noun} in the TFS file could not "
+                    f"be parsed (see log for details)")
+
+        min_slices = interp_method.k + 1
+        counts: dict[int, int] = {}     # keyed by channel index - names may not be unique
+        names: dict[int, str] = {}
+
+        for channel in tfs_parser.get_channels():
+            images = tfs_parser.get_images_for_channel(channel.index)
+            if not images:
+                logger.warning(f"Channel '{channel.name}' has no images and will be skipped.")
+                continue
+
+            if len(images) < min_slices:
+                return (f"Error: channel '{channel.name}' has {len(images)} slice(s); "
+                        f"{interp_method.name} needs at least {min_slices}")
+
+            counts[channel.index] = len(images)
+            names[channel.index] = channel.name
+
+        if not counts:
+            return "Error: no channel in the TFS file has any images"
+
+        if len(set(counts.values())) > 1:
+            details = ", ".join(f"{names[idx]} (channel {idx}): {count}" for idx, count in counts.items())
+            return f"Error: channels have unequal slice counts ({details})"
+
+        return None
+
+    def shutdown(self):
+        """
+        Stop a running worker before the application exits.
+
+        Connected to QGuiApplication.aboutToQuit.  Without this, closing the
+        window mid-run destroys a running QThread, which aborts the process
+        and can truncate a TIFF mid-write.
+        """
+        thread = self._thread
+        try:
+            if thread is None or not thread.isRunning():
+                return
+        except RuntimeError:
+            return  # underlying C++ thread object already deleted
+
+        logger.info("Application closing - stopping worker thread...")
+        if self._worker:
+            self._worker.request_stop()
+        thread.quit()
+        if not thread.wait(15000):
+            logger.warning("Worker thread did not stop within 15 s - terminating.")
+            thread.terminate()
+            thread.wait(3000)
+
+    def _clear_worker_refs(self):
+        """Drop worker/thread references once a run has ended (objects are deleteLater'd)."""
+        self._worker = None
+        self._thread = None
+
+    def _get_interpolated_tfs_path(self) -> Path | None:
+        """Get the path to the interpolated TFS file.
+
+        Delegates to the shared helper in tfs_file_generator so the name this
+        checks/deletes always matches the name the generator writes.
+
+        :return: Path to the interpolated TFS file, or None if no TFS file is set
+        """
+        if not self._tfs_file_path:
+            return None
+        return get_interpolated_tfs_path(Path(self._tfs_file_path))
+
+    def _check_processed_data_exists(self):
+        """Check if processed_images directory or interpolated TFS file exists and update property."""
+        if not self._tfs_file_path:
+            self._processed_data_exists = False
+            self.processed_data_exists_signal.emit(False)
+            return
+        
+        # Check if processed images directory exists
+        tfs_path = Path(self._tfs_file_path)
+        processed_dir = tfs_path.parent / PROCESSED_IMAGES_DIR_NAME
+
+        # Check if interpolated TFS file exists
+        interpolated_tfs_file = self._get_interpolated_tfs_path()
+
+        # Data exists if either the directory or TFS file exists
+        exists = (processed_dir.exists() and processed_dir.is_dir()) or (
+            interpolated_tfs_file is not None and interpolated_tfs_file.exists()
+        )
+
+        # Emit signal if state changed
+        if exists != self._processed_data_exists:
+            self._processed_data_exists = exists
+            self.processed_data_exists_signal.emit(exists)
+            logger.debug(f"Processed data exists: {exists}")
+
+    def _update_operator_to_statusGB(self, signal: str):
+        """Send signal to the Status GB status label."""
+        self._operator_to_statusGB = signal
+        self.operator_to_statusGB_signal.emit(signal)
+
+    def _update_operator_to_progressBar_visible(self, visible: bool):
+        """Set progress bar visibility."""
+        self._operator_to_progressBar_visible = visible
+        self.operator_to_progressBar_visible_signal.emit(visible)
+
+    def _update_operator_to_progressBar_value(self, value: int):
+        """Set progress bar value, clamped to 0-100."""
+        clamped_value = max(0, min(100, value))
+        self._operator_to_progressBar_value = clamped_value
+        self.operator_to_progressBar_value_signal.emit(clamped_value)
+    
+    def _on_worker_status_update(self, message: str):
+        """Worker message to operator."""
+        self._update_operator_to_statusGB(message)
+    
+    def _on_worker_progress_update(self, value: int):
+        """Worker progress bar update to operator."""
+        self._update_operator_to_progressBar_value(value)
+    
+    def _on_worker_finished(self):
+        """Worker completed cleanly. Reset running state and update UI."""
+        self._processing_running = False
+        self.processing_running_signal.emit(False)
+        self._update_operator_to_progressBar_visible(False)
+        self._check_processed_data_exists()
+        logger.info("Worker finished - UI reset complete.")
+
+    def _on_worker_stopped(self):
+        """Worker was stopped by user request. Reset running state and update UI."""
+        self._processing_running = False
+        self.processing_running_signal.emit(False)
+        self._update_operator_to_progressBar_visible(False)
+        self._check_processed_data_exists()
+        logger.info("Worker stopped by user - UI reset complete.")
+
+    def _on_worker_error(self, message: str):
+        """Worker message to operator if there is an error encountered."""
+        self._processing_running = False
+        self.processing_running_signal.emit(False)
+        self._update_operator_to_progressBar_visible(False)
+        self._update_operator_to_statusGB(f"Error: {message}")
+        # A failed run may still have written partial output - refresh so the
+        # Delete Data button reflects it.
+        self._check_processed_data_exists()
+        logger.error(f"Worker error: {message}")
+
+
+def setup_logging():
+    """
+    Configure logging for the application.
+
+    Logs at INFO to the console (DEBUG spams per-slice output from every
+    module and third-party libraries).
+    """
+    logging.basicConfig(
+        format="%(asctime)s:\t%(name)s\t%(levelname)s:\t%(funcName)s:\t%(message)s",
+        level=logging.INFO,
+        handlers=[logging.StreamHandler()],
+    )
+
+
+def main():
+    """Main function to run the application."""
+
+    # Setup logging
+    setup_logging()
+
+    base_path = Path(__file__).parent
+    qml_resources_path = base_path / "qml_resources"
+    config_file_path = base_path / "qml_resources" / "qtquickcontrols2.conf"
+
+    # Set QT_QUICK_CONTROLS_CONF environment variable
+    os.environ["QT_QUICK_CONTROLS_CONF"] = str(config_file_path)
+
+    # Create application
+    app = QGuiApplication(sys.argv)
+
+    # Application engine
+    engine = QQmlApplicationEngine()
+
+    # Python objects
+    main_operator = MainOperator()
+    image_filter_methods = get_filter_method_names()
+    interpolation_methods = get_interpolation_method_names()
+    interpolation_method_descriptions = get_interpolation_method_descriptions()
+
+    # Stop a running worker cleanly when the window is closed
+    app.aboutToQuit.connect(main_operator.shutdown)
+
+    # Connections to QML
+    engine.rootContext().setContextProperty("main_operator_backend", main_operator)
+    engine.rootContext().setContextProperty("app_version", __version__)
+    engine.rootContext().setContextProperty("image_filter_methods", image_filter_methods)
+    engine.rootContext().setContextProperty("interpolation_methods", interpolation_methods)
+    engine.rootContext().setContextProperty("interpolation_method_descriptions", interpolation_method_descriptions)
+
+    # Load QML file
+    qml_file = qml_resources_path / "main.qml"
+    if not qml_file.exists():
+        logger.error(f"QML file not found: {qml_file}")
+        sys.exit(-1)
+
+    engine.load(str(qml_file))
+
+    engine.quit.connect(app.quit)
+    if not engine.rootObjects():
+        logger.error("Failed to load QML file")
+        sys.exit(-1)
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()
