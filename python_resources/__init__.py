@@ -5,4 +5,4 @@ here on each release; everything that displays the version (e.g. the main
 window title) reads it from this attribute rather than hardcoding it.
 """
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"

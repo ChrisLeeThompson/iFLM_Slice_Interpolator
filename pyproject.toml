@@ -5,6 +5,7 @@ name = "iFLM Slice Interpolator 2"
 files = [
     "iflm_slice_interpolator.py",
     "qml_resources/AppConfig.qml",
+    "qml_resources/BackgroundSubtractionGB.qml",
     "qml_resources/ImageFilterGB.qml",
     "qml_resources/ImageStackOriginGB.qml",
     "qml_resources/InterpolationGB.qml",

@@ -87,10 +87,13 @@ class InterpolationMethod:
 from .image_filters import (
     _subtract_background_min_value,
     _subtract_background_gaussian,
+    _subtract_background_rolling,
     _compute_global_min,
     _compute_global_gaussian_median,
+    _compute_global_rolling_median,
     _subtract_global_min,
     _subtract_global_gaussian,
+    _subtract_global_rolling,
 )
 
 
@@ -111,6 +114,13 @@ IMAGE_FILTER_METHODS: List[FilterMethod] = [
         compute_global  = _compute_global_gaussian_median,
         apply_global    = _subtract_global_gaussian,
     ),
+    # Appended so the stored indices of the two methods above never change.
+    FilterMethod(
+        name            = "Rolling Background",
+        subtract        = _subtract_background_rolling,
+        compute_global  = _compute_global_rolling_median,
+        apply_global    = _subtract_global_rolling,
+    ),
 ]
 
 INTERPOLATION_METHODS: List[InterpolationMethod] = [
@@ -120,7 +130,7 @@ INTERPOLATION_METHODS: List[InterpolationMethod] = [
 
 
 # ---------------------------------------------------------------------------
-# Convenience helpers used by main.py to feed the UI
+# Convenience helpers used by iflm_slice_interpolator.py to feed the UI
 # ---------------------------------------------------------------------------
 
 def get_filter_method_names() -> List[str]:

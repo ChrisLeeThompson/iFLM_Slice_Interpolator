@@ -19,7 +19,9 @@ class ProcessingParams:
     unsharp_amount: float = 7.0
     interpolation_factor: int = 2
     save_as_stack: bool = True                      # If true, single file tiff stack is saved for each channel (along with individual tiff files)
-    global_background_normalization: bool = False   # Use global background normalization accross stack
+    global_background_normalization: bool = False   # Use global background normalization across the stack
+    hot_pixel_filter: bool = False                  # Repair defective camera pixels (persistent defects + per-slice transients) before background subtraction
+    hot_pixel_sigma: float = 6.0                    # Detection threshold, in local noise sigma
 
     def get_unsharp_ksize_tuple(self) -> tuple:
             """

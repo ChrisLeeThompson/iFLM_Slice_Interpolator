@@ -10,7 +10,10 @@ GroupBox {
     property alias progressBarValue: progressBar.value
     property alias progressBarFrom: progressBar.from
     property alias progressBarTo: progressBar.to
-    property alias progressBarVisible: progressBar.visible
+    // Bool driving opacity rather than an alias to `visible`: hiding the bar
+    // collapsed its layout row and changed the window height at processing
+    // start/end.  Opacity keeps the layout space reserved.
+    property bool progressBarVisible: false
 
     id: root
 
@@ -108,6 +111,7 @@ GroupBox {
 
                     id: progressBar
                     Layout.fillWidth: true
+                    opacity: root.progressBarVisible ? 1.0 : 0.0
 
                 }
 

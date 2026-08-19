@@ -3,8 +3,13 @@ Worker Thread Module
 
 Processing order per channel:
     1. Load raw TIFFs from disk into memory
-    2. Filter (background subtraction + unsharp mask) — yields one slice
-       at a time, each slice written to disk immediately
+    1b. Hot pixel scan (optional) — folds the whole stack into a persistence
+       vote to locate persistent camera defects, and records per-slice
+       transient detections (cosmic rays, blinking pixels) along the way.
+       Runs before the output directory is cleared, so an aborted scan
+       leaves previous output intact.
+    2. Filter (hot pixel repair + background subtraction + unsharp mask) —
+       yields one slice at a time, each slice written to disk immediately
     3. Interpolate — needs all filtered slices in memory, then yields one
        interpolated slice at a time, each written to disk immediately
     4. Write debug TIFF stack (single multi-page file, all interpolated
@@ -26,10 +31,11 @@ from typing import List
 from PySide6.QtCore import QObject, Signal
 
 from .image_filters import process_stack
+from .hot_pixel_filter import scan_hot_pixels, HotPixelMask
 from .slice_interpolator import interpolate_stack, calculate_interpolated_focus_values
 from .processing_config import FilterMethod, InterpolationMethod
 from .tfs_file_parser import TFSFileParser
-from .tfs_file_generator import generate_interpolated_tfs_file
+from .tfs_file_generator import generate_interpolated_tfs_file, get_interpolated_tfs_path
 
 
 logger = logging.getLogger(__name__)
@@ -80,6 +86,8 @@ class ProcessingWorker(QObject):
         unsharp_amount:       float,
         interpolation_factor: int,
         global_background_normalization: bool,
+        hot_pixel_filter:     bool,
+        hot_pixel_sigma:      float,
         save_as_stack:        bool,
         output_base_dir:      Path,
         parent=None
@@ -96,6 +104,8 @@ class ProcessingWorker(QObject):
         self._unsharp_amount          = unsharp_amount
         self._interpolation_factor    = interpolation_factor
         self._global_background_norm  = global_background_normalization
+        self._hot_pixel_filter        = hot_pixel_filter
+        self._hot_pixel_sigma         = hot_pixel_sigma
         self._save_as_stack           = save_as_stack
         self._output_base_dir         = output_base_dir
 
@@ -254,7 +264,57 @@ class ProcessingWorker(QObject):
 
             num_input_slices = len(raw_slices)
 
+            # --- 1b. Hot pixel scan ---
+            # Deliberately before the rmtree below: if the scan refuses the
+            # data (implausible defect fraction) it raises, and the previous
+            # run's output for this channel is still on disk untouched.
+            # Emits status only, no progress units — the scan is ~0.6 of the
+            # ~212 work units for a channel, below the bar's 1% resolution.
+            hot_pixel_mask: HotPixelMask | None = None
+            if self._hot_pixel_filter:
+                self.status_update.emit(f"Hot pixel scan: {dir_name}")
+                for scan_idx, mask in scan_hot_pixels(raw_slices, self._hot_pixel_sigma):
+                    if self._stop_flag:
+                        self.status_update.emit("Processing stopped")
+                        logger.info(f"Processing stopped during hot pixel scan of '{dir_name}'.")
+                        self.stopped.emit()
+                        return
+                    if mask is not None:
+                        hot_pixel_mask = mask
+                    elif scan_idx < num_input_slices:
+                        # A skipped scan's final (num_slices, None) yield would
+                        # otherwise print a tick for a slice never scanned
+                        self.status_update.emit(f"Hot pixel scan: {dir_name} z{scan_idx:04d}")
+
+                if hot_pixel_mask is None:
+                    # Only remaining skip reason: constant first frame (short
+                    # stacks now run transient-only) — details in the log
+                    self.status_update.emit(f"Hot pixels: {dir_name} scan skipped (see log)")
+                elif not hot_pixel_mask.has_corrections:
+                    self.status_update.emit(f"Hot pixels: {dir_name} none found")
+                else:
+                    prefix = "Hot pixels (HIGH)" if hot_pixel_mask.high_count else "Hot pixels"
+                    note = " — follows structure, check mask" if hot_pixel_mask.follows_structure else ""
+                    self.status_update.emit(
+                        f"{prefix}: {dir_name} {hot_pixel_mask.count:,} persistent "
+                        f"({hot_pixel_mask.fraction * 100:.4f} %) + "
+                        f"{hot_pixel_mask.transient_total:,} transient px{note}"
+                    )
+
             # --- 2. Create a clean output subdirectory for this channel ---
+            # From here until the new TFS is generated at the very end, the
+            # on-disk output is a partial mix of old and new planes.  A
+            # previous run's interpolated TFS must not survive into that
+            # window: if this run aborts after rewriting a channel (e.g. at a
+            # different interpolation factor), the stale XML would reference
+            # z-planes that no longer exist and a TFS Maps import would load
+            # a broken or channel-inconsistent stack.  First iteration
+            # deletes it; later ones are a no-op.
+            stale_tfs = get_interpolated_tfs_path(self._tfs_parser.tfs_file_path)
+            if stale_tfs.exists():
+                stale_tfs.unlink()
+                logger.info(f"Removed previous interpolated TFS file: {stale_tfs.name}")
+
             # Clear any previous run's output first: a re-run with a smaller
             # interpolation factor would otherwise leave stale higher-z TIFFs
             # mixed into the directory.
@@ -263,6 +323,23 @@ class ProcessingWorker(QObject):
                 logger.info(f"Clearing previous output directory: {channel_dir}")
                 shutil.rmtree(channel_dir)
             channel_dir.mkdir(parents=True, exist_ok=True)
+
+            # Audit trail: a 0/255 map of every pixel this run will edit.
+            # Written into the channel directory so it travels with the data.
+            # Nothing in tfs_file_generator enumerates a directory (paths are
+            # built by pattern), so an extra file here cannot affect the
+            # generated XML or a TFS Maps import.
+            if hot_pixel_mask is not None and hot_pixel_mask.count:
+                mask_path = channel_dir / f"hotpixel_mask_{wavelength_tag}.tif"
+                tifffile.imwrite(str(mask_path), hot_pixel_mask.to_mask_image())
+                logger.info(f"Wrote hot pixel mask: {mask_path}")
+
+            # Companion audit: per-pixel detection counts.  In FIJI, persistent
+            # defects read ~num_slices, blinkers intermediate, cosmic rays 1.
+            if hot_pixel_mask is not None and hot_pixel_mask.has_corrections:
+                votes_path = channel_dir / f"hotpixel_votes_{wavelength_tag}.tif"
+                tifffile.imwrite(str(votes_path), hot_pixel_mask.votes)
+                logger.info(f"Wrote hot pixel vote map: {votes_path}")
 
             # --- 3. Filter pass ---
             # self.status_update.emit(f"Filtering: [{ch_idx + 1}/{num_channels}] {dir_name}")
@@ -277,7 +354,8 @@ class ProcessingWorker(QObject):
                 gaussian_sigma=self._gaussian_sigma,
                 unsharp_sigma=self._unsharp_sigma,
                 unsharp_amount=self._unsharp_amount,
-                global_background_normalization=self._global_background_norm
+                global_background_normalization=self._global_background_norm,
+                hot_pixel_mask=hot_pixel_mask
             ):
                 if self._stop_flag:
                     self.status_update.emit("Processing stopped")

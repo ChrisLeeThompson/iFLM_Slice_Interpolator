@@ -4,9 +4,8 @@ import QtQuick.Layouts
 
 GroupBox {
 
-    property alias imageFilterMethodCurrentIndex: imageFilterMethodComboBox.currentIndex
-    property alias gaussianBackgroundSigmaValue: gaussianBackgroundSigmaSB.realValue
-    property alias globalBackgroundNormalizationChecked: globalBackgroundNormalizationCheckBox.checked
+    property alias hotPixelFilterChecked: hotPixelFilterCheckBox.checked
+    property alias hotPixelSensitivityValue: hotPixelSensitivitySB.realValue
     property alias unsharpKernelSize: unsharpKernelComboBox.kernelSize
     property alias unsharpValue: unsharpSB.realValue
     property alias unsharpGaussianSigmaValue: unsharpGaussianSigmaSB.realValue
@@ -15,7 +14,7 @@ GroupBox {
 
     Layout.fillWidth: true
 
-    title: qsTr("Background Subtraction Settings")
+    title: qsTr("Image Filter Settings")
 
     background: Rectangle {
         id: mainRectangle
@@ -40,106 +39,20 @@ GroupBox {
 
             RowLayout {
 
-                Layout.fillWidth: true
-                spacing: 20
-
                 Label {
 
-                    id: imageFilterMethodComboBoxLabel
+                    property string _toolTipText: AppConfig.hotPixelFilterLabelToolTip
+
+                    id: hotPixelFilterLabel
                     Layout.fillWidth: true
                     Layout.alignment: Qt.AlignLeft
-                    text: qsTr("Method")
-
-                }
-
-                ComboBox {
-
-                    id: imageFilterMethodComboBox
-                    Layout.fillWidth: true
-                    Layout.alignment: Qt.AlignRight
-                    model: image_filter_methods
-                    currentIndex: 0
-
-                }
-
-            }
-
-            // Page 0: Minimum value background substraction
-            RowLayout {
-
-                id: minValueRowLayout
-                Layout.fillWidth: true
-                Layout.topMargin: AppConfig.rowLayoutTopMargin
-                Layout.preferredHeight: gaussianBackgroundRowLayout.height
-                visible: imageFilterMethodComboBox.currentIndex === 0
-
-                Label {
-
-                    id: minValueFilterLabel
-                    Layout.fillWidth: true
-                    text: qsTr("Auto parameters")
-
-                }
-
-            }
-
-            // Page 1: Guassian background
-            RowLayout {
-
-                id: gaussianBackgroundRowLayout
-                Layout.fillWidth: true
-                Layout.topMargin: AppConfig.rowLayoutTopMargin
-                visible: imageFilterMethodComboBox.currentIndex === 1
-
-                Label {
-
-                    property string _toolTipText: AppConfig.gaussianFilterLabelToolTip
-
-                    id: gaussianFilterLabel
-                    Layout.fillWidth: true
-                    text: qsTr("Gaussian Sigma")
+                    text: qsTr("Hot Pixel Filter")
                     ToolTip.text: _toolTipText
                     ToolTip.delay: AppConfig.toolTipDelay
                     ToolTip.timeout: AppConfig.toolTipTimeout
-                    ToolTip.visible: _toolTipText ? gaussianFilterLabelMA.containsMouse : false
+                    ToolTip.visible: _toolTipText ? hotPixelFilterLabelMA.containsMouse : false
                     MouseArea {
-                        id: gaussianFilterLabelMA
-                        anchors.fill: parent
-                        hoverEnabled: true
-                    }
-
-                }
-
-                SpinBoxDouble {
-
-                    id: gaussianBackgroundSigmaSB
-                    Layout.alignment: Qt.AlignRight
-                    decimals: 0
-                    realValue: 50
-                    realFrom: 1
-                    realTo: 100
-                    realStepSize: 1
-
-                }
-
-            }
-
-            RowLayout {
-
-                Label {
-
-                    property string _toolTipText: AppConfig.globalBackgroundNormalizationLabelToolTip
-
-                    id: globalBackgroundNormalizationLabel
-                    Layout.fillWidth: true
-                    Layout.alignment: Qt.AlignLeft
-                    text: qsTr("Global Background Normalization")
-                    ToolTip.text: _toolTipText
-                    ToolTip.delay: AppConfig.toolTipDelay
-                    ToolTip.timeout: AppConfig.toolTipTimeout
-                    ToolTip.visible: _toolTipText ? globalBackgroundNormalizationLabelMA.containsMouse : false
-                    MouseArea {
-                        id: globalBackgroundNormalizationLabelMA
+                        id: hotPixelFilterLabelMA
                         anchors.fill: parent
                         hoverEnabled: true
                     }
@@ -148,7 +61,7 @@ GroupBox {
 
                 CheckBox {
 
-                    id: globalBackgroundNormalizationCheckBox
+                    id: hotPixelFilterCheckBox
                     Layout.alignment: Qt.AlignRight
 
                 }
@@ -156,6 +69,53 @@ GroupBox {
             }
 
             RowLayout {
+
+                // Greyed out rather than hidden: hiding reflows the whole group
+                // box on every toggle.  Item.enabled propagates to children, so
+                // this one binding greys the label and the spin box together.
+                enabled: hotPixelFilterCheckBox.checked
+
+                Label {
+
+                    property string _toolTipText: AppConfig.hotPixelSensitivityLabelToolTip
+
+                    id: hotPixelSensitivityLabel
+                    Layout.fillWidth: true
+                    Layout.alignment: Qt.AlignLeft
+                    text: qsTr("Hot Pixel Sensitivity")
+                    ToolTip.text: _toolTipText
+                    ToolTip.delay: AppConfig.toolTipDelay
+                    ToolTip.timeout: AppConfig.toolTipTimeout
+                    ToolTip.visible: _toolTipText ? hotPixelSensitivityLabelMA.containsMouse : false
+                    MouseArea {
+                        id: hotPixelSensitivityLabelMA
+                        anchors.fill: parent
+                        hoverEnabled: true
+                    }
+
+                }
+
+                SpinBoxDouble {
+
+                    // decimals: 0 on purpose.  On integer image data the local
+                    // scale is only a few ADU, so half-sigma steps would land
+                    // below the quantization step and one step in two would be
+                    // a literal no-op.
+                    id: hotPixelSensitivitySB
+                    Layout.alignment: Qt.AlignRight
+                    decimals: 0
+                    realValue: 6
+                    realFrom: 2
+                    realTo: 15
+                    realStepSize: 1
+
+                }
+
+            }
+
+            RowLayout {
+
+                Layout.topMargin: AppConfig.rowLayoutTopMargin
 
                 Label {
 
@@ -235,16 +195,16 @@ GroupBox {
 
                     property string _toolTipText: AppConfig.unsharpGaussianSigmaLabelToolTip
 
-                    id: unsharpGuassianSigmaLabel
+                    id: unsharpGaussianSigmaLabel
                     Layout.alignment: Qt.AlignLeft
                     Layout.fillWidth: true
                     text: qsTr("Unsharp Gaussian Sigma")
                     ToolTip.text: _toolTipText
                     ToolTip.delay: AppConfig.toolTipDelay
                     ToolTip.timeout: AppConfig.toolTipTimeout
-                    ToolTip.visible: _toolTipText ? unsharpGuassianSigmaLabelMA.containsMouse : false
+                    ToolTip.visible: _toolTipText ? unsharpGaussianSigmaLabelMA.containsMouse : false
                     MouseArea {
-                        id: unsharpGuassianSigmaLabelMA
+                        id: unsharpGaussianSigmaLabelMA
                         anchors.fill: parent
                         hoverEnabled: true
                     }

@@ -12,3 +12,6 @@ __pycache__/
 # Virtual environments
 .venv/
 venv/
+
+# Local test datasets — never committed
+test_images/
