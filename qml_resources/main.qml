@@ -57,7 +57,10 @@ ApplicationWindow {
 			Layout.fillWidth: true
 			Layout.fillHeight: true
 
-			ScrollBar.vertical.policy: contentHeight > height ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff
+			// AlwaysOn (not AsNeeded) while content overflows: the Material
+			// style only shows an AsNeeded scrollbar during a scroll, so
+			// nothing would hint that more settings sit below the fold
+			ScrollBar.vertical.policy: contentHeight > height ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
 			clip: true
 
 			ColumnLayout {
