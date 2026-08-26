@@ -11,10 +11,12 @@ The new TFS XML file can be loaded in TFS Maps software.
 .
 If you are using Thermo Scientific AutoScript 4.13+, this script should function without additional dependencies.
 .
-Much of the code was written with the assistance of ClaudeAI.
+Much of the code was written with the assistance of Anthropic's Claude.
 If you have any questions, comments, or suggestions, please contact Chris Thompson (GitHub: ChrisLeeThompson).
 .
 .
+Thank you,
+Chris Thompson
 .
 MIT License
 .
@@ -50,7 +52,7 @@ from python_resources.processing_config import (
 from python_resources.worker_thread import ProcessingWorker
 from python_resources.tfs_file_parser import TFSFileParser
 from python_resources.tfs_file_generator import (
-    PROCESSED_IMAGES_DIR_NAME, get_interpolated_tfs_path
+    get_interpolated_tfs_path, get_processed_images_dir
 )
 
 
@@ -151,6 +153,13 @@ class MainOperator(QObject):
     @Slot(str)
     def set_tfs_file_path(self, path: str):
         """Set and validate the TFS file path.  Accepts plain paths or file:// URLs."""
+        # The Browse button is disabled during a run, but the drop target is
+        # always live - ignore drops so a mid-run selection cannot retarget
+        # the processed-data checks and the Delete button at another stack.
+        if self._processing_running:
+            logger.info("File selection ignored while processing is running.")
+            return
+
         # QML file dialogs and drag-and-drop deliver file:// URLs.  QUrl handles
         # percent-encoding and UNC shares (file://server/share) correctly, unlike
         # stripping the prefix by hand.
@@ -170,6 +179,13 @@ class MainOperator(QObject):
         if not file_path.suffix.lower() in [".xml"]:
             logger.error(f"Invalid file type. Expected .xml, got: {file_path.suffix}")
             self._update_operator_to_statusGB(f"Not an .xml file: {file_path.name}")
+            return
+
+        if file_path.name.startswith("Interpolated_"):
+            logger.error(f"Refusing interpolated output file as input: {file_path.name}")
+            self._update_operator_to_statusGB(
+                "Error: this is an output file of this tool - select the original TFS XML file"
+            )
             return
 
         # File is valid - update paths
@@ -260,13 +276,13 @@ class MainOperator(QObject):
     
     @Slot()
     def delete_processed_data(self):
-        """Delete the processed_images directory and the interpolated TFS file."""
+        """Delete the stack's processed images folder and the interpolated TFS file."""
         if not self._tfs_file_path:
             logger.warning("No TFS file selected.")
             return
-        
+
         tfs_path = Path(self._tfs_file_path)
-        processed_dir = tfs_path.parent / PROCESSED_IMAGES_DIR_NAME
+        processed_dir = get_processed_images_dir(tfs_path)
 
         # Get interpolated TFS file path
         interpolated_tfs_file = self._get_interpolated_tfs_path()
@@ -280,6 +296,11 @@ class MainOperator(QObject):
                 shutil.rmtree(processed_dir)
                 deleted_items.append("processed images")
                 logger.info("Processed images directory deleted successfully.")
+                # Prune the shared processed_images directory if this stack's
+                # folder was the last thing inside it.
+                parent = processed_dir.parent
+                if parent.exists() and not any(parent.iterdir()):
+                    parent.rmdir()
             except Exception:
                 logger.error(f"Failed to delete processed images directory", exc_info=True)
         
@@ -352,7 +373,7 @@ class MainOperator(QObject):
             return
 
         # Create output directory
-        output_base_dir = Path(self._tfs_file_path).parent / PROCESSED_IMAGES_DIR_NAME
+        output_base_dir = get_processed_images_dir(Path(self._tfs_file_path))
         try:
             output_base_dir.mkdir(parents=True, exist_ok=True)
         except OSError:
@@ -399,7 +420,11 @@ class MainOperator(QObject):
         # Clearing them from the worker-signal handlers would drop the last
         # Python reference to a still-running QThread, which deletes the C++
         # object and aborts the process (QThread destroyed while running).
-        self._thread.finished.connect(self._clear_worker_refs)
+        # The lambda captures this run's thread: the finished signal of a
+        # previous run arrives one queued delivery after Start re-enables, so
+        # an unconditional handler could clear a newer run's references.
+        thread = self._thread
+        thread.finished.connect(lambda: self._clear_worker_refs(thread))
 
         # Update status and start
         self._processing_running = True
@@ -463,6 +488,20 @@ class MainOperator(QObject):
                 return (f"Error: channel '{channel.name}' has {len(images)} slice(s); "
                         f"{interp_method.name} needs at least {min_slices}")
 
+            # Exactly one image per plane, planes 0..N-1.  Anything else
+            # (tile grids, time series, duplicate plane indices) would be
+            # silently splined across unrelated images.
+            plane_indices = sorted(img.plane_index for img in images)
+            if plane_indices != list(range(len(images))):
+                return (f"Error: channel '{channel.name}' does not have exactly one "
+                        f"image per plane (tiled or time-series data is not supported)")
+
+            first = images[0]
+            if any(img.row != first.row or img.column != first.column
+                   or img.time_frame != first.time_frame for img in images):
+                return (f"Error: channel '{channel.name}' spans multiple tiles or "
+                        f"time frames (not supported)")
+
             counts[channel.index] = len(images)
             names[channel.index] = channel.name
 
@@ -499,10 +538,11 @@ class MainOperator(QObject):
             thread.terminate()
             thread.wait(3000)
 
-    def _clear_worker_refs(self):
+    def _clear_worker_refs(self, thread: QThread):
         """Drop worker/thread references once a run has ended (objects are deleteLater'd)."""
-        self._worker = None
-        self._thread = None
+        if thread is self._thread:
+            self._worker = None
+            self._thread = None
 
     def _get_interpolated_tfs_path(self) -> Path | None:
         """Get the path to the interpolated TFS file.
@@ -525,7 +565,7 @@ class MainOperator(QObject):
         
         # Check if processed images directory exists
         tfs_path = Path(self._tfs_file_path)
-        processed_dir = tfs_path.parent / PROCESSED_IMAGES_DIR_NAME
+        processed_dir = get_processed_images_dir(tfs_path)
 
         # Check if interpolated TFS file exists
         interpolated_tfs_file = self._get_interpolated_tfs_path()

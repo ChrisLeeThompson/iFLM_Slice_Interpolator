@@ -31,6 +31,16 @@ logger = logging.getLogger(__name__)
 PROCESSED_IMAGES_DIR_NAME = "processed_images"
 
 
+def _split_tfs_name(original_tfs_path: Path) -> tuple[str, str]:
+    """Split a TFS file name into (base name, extension), handling '.tfs.xml'."""
+    original_name = original_tfs_path.name
+    if original_name.lower().endswith('.tfs.xml'):
+        return original_name[:-8], '.tfs.xml'
+    if original_name.lower().endswith('.tfs'):
+        return original_name[:-4], '.tfs'
+    return original_tfs_path.stem, original_tfs_path.suffix
+
+
 def get_interpolated_tfs_path(original_tfs_path: Path) -> Path:
     """
     Derive the output path for the interpolated TFS file.
@@ -41,20 +51,25 @@ def get_interpolated_tfs_path(original_tfs_path: Path) -> Path:
     :param original_tfs_path: Path to the original TFS file
     :return: Path of the interpolated TFS file (same directory as the original)
     """
-    original_name = original_tfs_path.name
-
-    # Handle different TFS file naming patterns
-    if original_name.lower().endswith('.tfs.xml'):
-        base_name = original_name[:-8]  # Remove '.tfs.xml'
-        extension = '.tfs.xml'
-    elif original_name.lower().endswith('.tfs'):
-        base_name = original_name[:-4]  # Remove '.tfs'
-        extension = '.tfs'
-    else:
-        base_name = original_tfs_path.stem
-        extension = original_tfs_path.suffix
-
+    base_name, extension = _split_tfs_name(original_tfs_path)
     return original_tfs_path.parent / f"Interpolated_{base_name}{extension}"
+
+
+def get_processed_images_dir(original_tfs_path: Path) -> Path:
+    """
+    Derive the per-stack output directory for processed images.
+
+    Single source of truth for the output location - used by the worker to
+    write, by the generator to build <RelativePath> entries, and by the UI
+    to locate/delete processed data.  Each TFS file gets its own
+    subdirectory so two stacks sitting in the same directory cannot
+    overwrite each other's output.
+
+    :param original_tfs_path: Path to the original TFS file
+    :return: processed_images/<stack name>, next to the original TFS file
+    """
+    base_name, _ = _split_tfs_name(original_tfs_path)
+    return original_tfs_path.parent / PROCESSED_IMAGES_DIR_NAME / base_name
 
 
 def _generate_tfs_guid() -> str:
@@ -252,6 +267,11 @@ class TFSFileGenerator:
         for old_img_elem in images_container.findall('Image'):
             images_container.remove(old_img_elem)
 
+        # RelativePath entries are resolved relative to the generated XML,
+        # which sits next to the original TFS file - so they start with the
+        # same per-stack directory the worker writes into.
+        stack_dir_name, _ = _split_tfs_name(self._original_parser.tfs_file_path)
+
         # Rebuild images with correct ordering: for each plane, add all channels.
         #
         # NOTE: each generated <Image> is a deep copy of the channel's first
@@ -314,7 +334,7 @@ class TFSFileGenerator:
                 if relative_path_elem is not None:
                     # Use Windows-style backslashes to match original TFS format
                     new_relative_path = (
-                        f"{PROCESSED_IMAGES_DIR_NAME}\\{dir_name}\\"
+                        f"{PROCESSED_IMAGES_DIR_NAME}\\{stack_dir_name}\\{dir_name}\\"
                         f"interpolated_stack_z{plane_idx:04d}_{wavelength_tag}.tif"
                     )
                     relative_path_elem.text = new_relative_path

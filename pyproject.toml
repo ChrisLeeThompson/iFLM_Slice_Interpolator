@@ -1,5 +1,6 @@
 [project]
 name = "iFLM Slice Interpolator 2"
+version = "2.2.0"
 
 [tool.pyside6-project]
 files = [

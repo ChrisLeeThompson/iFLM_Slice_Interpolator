@@ -12,12 +12,12 @@ Processing order per channel:
        yields one slice at a time, each slice written to disk immediately
     3. Interpolate — needs all filtered slices in memory, then yields one
        interpolated slice at a time, each written to disk immediately
-    4. Write debug TIFF stack (single multi-page file, all interpolated
-       slices) — only after the per-slice files are all on disk
+    4. Optional TIFF stack (single multi-page file) — streamed one page per
+       interpolated slice alongside the per-slice files
 
 The stop flag is a simple bool.  The main thread sets it; the worker checks
 it while loading, at every yield point in both generators, and before the
-stack-write and TFS-generation steps.
+TFS-generation step.
 """
 
 import logging
@@ -390,60 +390,54 @@ class ProcessingWorker(QObject):
             # self.status_update.emit(f"Interpolating: [{ch_idx + 1}/{num_channels}] {dir_name}")
             self.status_update.emit(f"Interpolating: {dir_name}")
 
-            interpolated_slices: List[np.ndarray] = []   # collected for the stack file
+            # The optional multi-page stack file is streamed one page per
+            # interpolated slice rather than accumulated in memory first —
+            # accumulating would double the peak footprint on large stacks.
+            stack_writer = None
+            if self._save_as_stack:
+                stack_path = channel_dir / f"interpolated_stack_{wavelength_tag}.tif"
+                stack_writer = tifffile.TiffWriter(str(stack_path))
 
-            for slice_idx, interpolated_image in interpolate_stack(
-                filtered_slices,
-                self._interp_method,
-                interpolation_factor=self._interpolation_factor
-            ):
-                if self._stop_flag:
-                    self.status_update.emit("Processing stopped")
-                    logger.info(f"Processing stopped during interpolation of '{dir_name}'.")
-                    self.stopped.emit()
-                    return
+            try:
+                for slice_idx, interpolated_image in interpolate_stack(
+                    filtered_slices,
+                    self._interp_method,
+                    interpolation_factor=self._interpolation_factor
+                ):
+                    if self._stop_flag:
+                        self.status_update.emit("Processing stopped")
+                        logger.info(f"Processing stopped during interpolation of '{dir_name}'.")
+                        self.stopped.emit()
+                        return
 
-                # Write individual interpolated TIFF with final naming pattern
-                # Example: interpolated_stack_z0000_L385.tif or interpolated_stack_z0000_L470_refl.tif
-                interp_filename = f"interpolated_stack_z{slice_idx:04d}_{wavelength_tag}.tif"
-                interp_path = channel_dir / interp_filename
-                tifffile.imwrite(str(interp_path), interpolated_image)
+                    # Write individual interpolated TIFF with final naming pattern
+                    # Example: interpolated_stack_z0000_L385.tif or interpolated_stack_z0000_L470_refl.tif
+                    interp_filename = f"interpolated_stack_z{slice_idx:04d}_{wavelength_tag}.tif"
+                    interp_path = channel_dir / interp_filename
+                    tifffile.imwrite(str(interp_path), interpolated_image)
 
-                # Status update — show channel and slice number
-                self.status_update.emit(f"Interpolating: {dir_name} z{slice_idx:04d}")
+                    if stack_writer is not None:
+                        stack_writer.write(interpolated_image, contiguous=True)
 
-                # Collect for the debug stack (only if requested)
-                if self._save_as_stack:
-                    interpolated_slices.append(interpolated_image)
+                    # Status update — show channel and slice number
+                    self.status_update.emit(f"Interpolating: {dir_name} z{slice_idx:04d}")
 
-                # Progress — only emit when percentage actually changes
-                work_done += 1
-                if total_work > 0:
-                    current_percent = int(work_done / total_work * 100)
-                    if current_percent != last_progress_percent:
-                        last_progress_percent = current_percent
-                        self.progress_update.emit(current_percent)
+                    # Progress — only emit when percentage actually changes
+                    work_done += 1
+                    if total_work > 0:
+                        current_percent = int(work_done / total_work * 100)
+                        if current_percent != last_progress_percent:
+                            last_progress_percent = current_percent
+                            self.progress_update.emit(current_percent)
+            finally:
+                if stack_writer is not None:
+                    stack_writer.close()
+
+            if stack_writer is not None:
+                logger.info(f"Wrote stack file: {stack_path.name}")
 
             # Free filtered slices
             del filtered_slices
-
-            if self._stop_flag:
-                self.status_update.emit("Processing stopped")
-                logger.info(f"Processing stopped before stack write of '{dir_name}'.")
-                self.stopped.emit()
-                return
-
-            # --- 5. Write debug TIFF stack (all interpolated slices, one file) ---
-            if self._save_as_stack and interpolated_slices:
-                stack_path = channel_dir / f"interpolated_stack_{wavelength_tag}.tif"
-                # self.status_update.emit(f"Writing stack: [{ch_idx + 1}/{num_channels}] {dir_name}")
-                self.status_update.emit(f"Writing stack: {dir_name}")
-                stack_array = np.stack(interpolated_slices, axis=0)
-                tifffile.imwrite(str(stack_path), stack_array)
-                logger.info(f"Wrote debug stack: {stack_path.name} ({stack_array.shape})")
-                del stack_array
-
-            del interpolated_slices
 
         # --- all channels done, now generate the interpolated TFS file ---
         if self._stop_flag:

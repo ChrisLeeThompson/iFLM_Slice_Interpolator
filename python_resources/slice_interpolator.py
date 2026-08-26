@@ -65,6 +65,9 @@ def interpolate_stack(
     z_orig      = np.arange(num_input)
     stack_flat  = np.stack(slices, axis=0).reshape(num_input, -1).astype(np.float32)
     spline      = make_interp_spline(z_orig, stack_flat, k=method.k, axis=0)
+    # The spline keeps its own (float64) coefficient copy; free the flat
+    # stack before the evaluation loop instead of holding both.
+    del stack_flat
 
     # --- compute new z positions ---
     z_new       = _new_z_positions(num_input, interpolation_factor)
@@ -76,14 +79,18 @@ def interpolate_stack(
     )
 
     # --- clipping bounds (only matters for cubic overshoot) ---
-    # Integer dtypes clip to their full range; float images clip only at 0
-    # (a fixed 1.0 ceiling would destroy float data with values above 1).
-    clip_max = float(np.iinfo(orig_dtype).max) if np.issubdtype(orig_dtype, np.integer) else None
+    # Integer dtypes clip to their full range and round to the nearest value;
+    # float images clip only at 0 (a fixed 1.0 ceiling would destroy float
+    # data with values above 1).
+    is_integer = np.issubdtype(orig_dtype, np.integer)
+    clip_max = float(np.iinfo(orig_dtype).max) if is_integer else None
 
     # --- yield one slice at a time ---
     for i, z in enumerate(z_new):
         interpolated_flat  = spline(z)
         interpolated_flat  = np.clip(interpolated_flat, 0, clip_max)
+        if is_integer:
+            interpolated_flat = np.rint(interpolated_flat)
         interpolated_slice = interpolated_flat.reshape(height, width).astype(orig_dtype)
 
         logger.debug(f"Interpolated slice {i + 1}/{num_output}")

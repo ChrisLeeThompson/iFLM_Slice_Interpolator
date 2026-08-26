@@ -39,6 +39,22 @@ from .hot_pixel_filter import HotPixelMask, correct_hot_pixels
 logger = logging.getLogger(__name__)
 
 
+def _to_original_dtype(result: np.ndarray, orig_dtype: np.dtype) -> np.ndarray:
+    """
+    Clip a float working image and cast it back to the original dtype.
+
+    Integer dtypes clip to their full range and round to the nearest value
+    (truncating would darken every pixel by ~0.5 ADU per stage); float images
+    clip only at 0, since a fixed 1.0 ceiling would destroy float data with
+    values above 1.
+    """
+    if np.issubdtype(orig_dtype, np.integer):
+        result = np.rint(np.clip(result, 0, np.iinfo(orig_dtype).max))
+    else:
+        result = np.clip(result, 0, None)
+    return result.astype(orig_dtype)
+
+
 # ---------------------------------------------------------------------------
 # Per-slice background subtraction
 # ---------------------------------------------------------------------------
@@ -54,9 +70,7 @@ def _subtract_background_min_value(image: np.ndarray) -> np.ndarray:
     float_img = image.astype(np.float32)
 
     min_val = float_img.min()
-    result = float_img - min_val
-
-    result = np.clip(result, 0, None).astype(orig_dtype)
+    result = _to_original_dtype(float_img - min_val, orig_dtype)
     logger.debug(f"Min value subtraction: min={min_val}")
     return result
 
@@ -73,12 +87,7 @@ def _subtract_background_gaussian(image: np.ndarray, sigma: float) -> np.ndarray
     float_img = image.astype(np.float32)
 
     background = cv2.GaussianBlur(float_img, (0, 0), sigmaX=sigma)
-    result = float_img - background
-
-    # Integer dtypes clip to their full range; float images clip only at 0
-    # (a fixed 1.0 ceiling would destroy float data with values above 1).
-    max_val = np.iinfo(orig_dtype).max if np.issubdtype(orig_dtype, np.integer) else None
-    result = np.clip(result, 0, max_val).astype(orig_dtype)
+    result = _to_original_dtype(float_img - background, orig_dtype)
 
     logger.debug(f"Gaussian background subtraction: sigma={sigma}")
     return result
@@ -139,10 +148,7 @@ def _subtract_background_rolling(image: np.ndarray, radius: float) -> np.ndarray
     float_img = image.astype(np.float32)
 
     background = _rolling_background_estimate(float_img, radius)
-    result = float_img - background
-
-    max_val = np.iinfo(orig_dtype).max if np.issubdtype(orig_dtype, np.integer) else None
-    result = np.clip(result, 0, max_val).astype(orig_dtype)
+    result = _to_original_dtype(float_img - background, orig_dtype)
 
     logger.debug(f"Rolling background subtraction: radius={radius}")
     return result
@@ -185,8 +191,7 @@ def _subtract_global_min(image: np.ndarray, global_min: float) -> np.ndarray:
     """Subtract a precomputed global minimum from a single slice."""
     orig_dtype = image.dtype
     result = image.astype(np.float32) - global_min
-    result = np.clip(result, 0, None).astype(orig_dtype)
-    return result
+    return _to_original_dtype(result, orig_dtype)
 
 
 def _subtract_global_gaussian(image: np.ndarray, sigma: float, global_bg_median: float) -> np.ndarray:
@@ -202,10 +207,7 @@ def _subtract_global_gaussian(image: np.ndarray, sigma: float, global_bg_median:
     local_bg = cv2.GaussianBlur(float_img, (0, 0), sigmaX=sigma)
     normalized_bg = local_bg - np.median(local_bg) + global_bg_median
     result = float_img - normalized_bg
-
-    max_val = np.iinfo(orig_dtype).max if np.issubdtype(orig_dtype, np.integer) else None
-    result = np.clip(result, 0, max_val).astype(orig_dtype)
-    return result
+    return _to_original_dtype(result, orig_dtype)
 
 
 def _subtract_global_rolling(image: np.ndarray, radius: float, global_bg_median: float) -> np.ndarray:
@@ -222,10 +224,7 @@ def _subtract_global_rolling(image: np.ndarray, radius: float, global_bg_median:
     local_bg = _rolling_background_estimate(float_img, radius)
     normalized_bg = local_bg - np.median(local_bg) + global_bg_median
     result = float_img - normalized_bg
-
-    max_val = np.iinfo(orig_dtype).max if np.issubdtype(orig_dtype, np.integer) else None
-    result = np.clip(result, 0, max_val).astype(orig_dtype)
-    return result
+    return _to_original_dtype(result, orig_dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -255,9 +254,7 @@ def _apply_unsharp_mask(image: np.ndarray, ksize: tuple, sigma: float, amount: f
     blurred = cv2.GaussianBlur(float_img, ksize=ksize, sigmaX=sigma)
     mask = float_img - blurred
     sharpened = float_img + (amount * mask)
-
-    max_val = np.iinfo(orig_dtype).max if np.issubdtype(orig_dtype, np.integer) else None
-    sharpened = np.clip(sharpened, 0, max_val).astype(orig_dtype)
+    sharpened = _to_original_dtype(sharpened, orig_dtype)
 
     kernel_mode = "auto" if ksize == (0, 0) else f"{ksize[0]}×{ksize[1]}"
     logger.debug(f"Unsharp mask: kernel={kernel_mode}, sigma={sigma}, amount={amount}")

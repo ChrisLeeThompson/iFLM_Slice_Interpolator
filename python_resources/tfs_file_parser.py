@@ -6,6 +6,7 @@ It extracts metadata, channel information, and image data in the file.
 """
 
 import logging
+import math
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -327,12 +328,20 @@ class TFSFileParser:
         # R (stage rotation) is optional - some TFS software omits it
         r_elem = position_elem.find('R')
 
+        # A non-finite focus (e.g. NaN from a failed autofocus) would pass
+        # float(), smear through the focus interpolation, and end up as a
+        # literal "nan" in the generated XML - drop the entry instead.
+        focus = float(focus_elem.text)
+        if not math.isfinite(focus):
+            self._drop_image(image_elem, f"non-finite Focus value: {focus_elem.text}")
+            return None
+
         position = PositionInfo(
             x=float(x_elem.text),
             y=float(y_elem.text),
             z=float(z_elem.text),
             at=float(at_elem.text),
-            focus=float(focus_elem.text),
+            focus=focus,
             r=float(r_elem.text) if r_elem is not None else None
         )
 
