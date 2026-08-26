@@ -17,7 +17,7 @@ class ProcessingParams:
     gaussian_background_sigma: int = 50
     unsharp_kernel_size: int = 3
     unsharp_gaussian_sigma: float = 0.5
-    unsharp_amount: float = 7.0
+    unsharp_amount: float = 3.0
     interpolation_factor: int = 2
     save_as_stack: bool = True                      # Also save a single multi-page TIFF stack per channel
     global_background_normalization: bool = False   # Use global background normalization across the stack

@@ -37,6 +37,7 @@ QtObject {
                                                        qsTr("0: calculated automatically from the sigma value.")
     readonly property string unsharpLabelToolTip: qsTr("Sharpening strength.\n\n") +
                                                   qsTr("Off: 0\n") +
+                                                  qsTr("Subtle: 3\n") +
                                                   qsTr("Moderate: 7\n") +
                                                   qsTr("Strong: 15+ (may introduce artifacts)")
     readonly property string unsharpGaussianSigmaLabelToolTip: qsTr("Width of the Gaussian blur.")

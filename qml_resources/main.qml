@@ -56,6 +56,9 @@ ApplicationWindow {
 			id: mainScrollView
 			Layout.fillWidth: true
 			Layout.fillHeight: true
+			// Inset the content so the pinned scrollbar does not sit
+			// against the group box edges
+			rightPadding: 8
 
 			// AlwaysOn (not AsNeeded) while content overflows: the Material
 			// style only shows an AsNeeded scrollbar during a scroll, so

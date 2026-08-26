@@ -52,7 +52,7 @@ differently: at 6 sigma on real iFLM data it flags ~0.13 % of the frame per
 slice, scattered like sensor noise (dispersion ~1.0), not like structure.  A
 false positive costs one strict local maximum flattened to its neighbourhood
 median - darken-only, in one slice - whereas a missed spike is amplified
-~3.7x by the default unsharp settings downstream and copied into every
+~2.1x by the default unsharp settings downstream and copied into every
 interpolated plane by the z-spline.  That asymmetry is why transient repair
 is on whenever the filter is on.
 

@@ -180,7 +180,7 @@ GroupBox {
                     id: unsharpSB
                     Layout.alignment: Qt.AlignRight
                     decimals: 1
-                    realValue: 7.0
+                    realValue: 3.0
                     realFrom: 0.0
                     realTo: 50.0
                     realStepSize: 0.1

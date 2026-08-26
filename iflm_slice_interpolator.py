@@ -83,7 +83,7 @@ class MainOperator(QObject):
             gaussian_background_sigma=50,
             unsharp_kernel_size=3,
             unsharp_gaussian_sigma=0.5,
-            unsharp_amount=7.0,
+            unsharp_amount=3.0,
             interpolation_factor=2,
             save_as_stack=True,
             global_background_normalization=False,

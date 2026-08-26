@@ -12,7 +12,7 @@ Processing pipeline per slice:
     2. Unsharp masking (if amount > 0)
 
 Hot pixel correction runs first because unsharp masking amplifies an isolated
-single-pixel spike ~3.7x at the default settings, and the z-interpolation
+single-pixel spike ~2.1x at the default settings, and the z-interpolation
 spline then copies it into every interpolated plane.  Detection lives in
 hot_pixel_filter.py; this module only applies a mask that was already scanned.
 
