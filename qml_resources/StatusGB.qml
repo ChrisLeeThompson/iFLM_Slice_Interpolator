@@ -134,10 +134,8 @@ GroupBox {
         }
     }
 
-    // Centralized icon update logic
+    // Color while processing runs, grayscale otherwise
     function updateCatbugIcon() {
-        // Color if: processing is running
-        // Grayscale if: not processing
         if (main_operator_backend.processing_running_property) {
             catbugIcon.source = "../script_assets/catbug_color_2.png"
         } else {

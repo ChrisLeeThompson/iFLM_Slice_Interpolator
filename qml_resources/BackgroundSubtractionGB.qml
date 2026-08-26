@@ -12,7 +12,7 @@ GroupBox {
 
     Layout.fillWidth: true
 
-    title: qsTr("Background Subtraction Settings")
+    title: qsTr("Background Subtraction")
 
     background: Rectangle {
         id: mainRectangle
@@ -74,7 +74,7 @@ GroupBox {
 
                     id: minValueFilterLabel
                     Layout.fillWidth: true
-                    text: qsTr("Auto parameters")
+                    text: qsTr("No adjustable parameters")
 
                 }
 

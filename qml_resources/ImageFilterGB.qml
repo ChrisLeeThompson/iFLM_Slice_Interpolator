@@ -14,7 +14,7 @@ GroupBox {
 
     Layout.fillWidth: true
 
-    title: qsTr("Image Filter Settings")
+    title: qsTr("Image Filter")
 
     background: Rectangle {
         id: mainRectangle
@@ -146,7 +146,7 @@ GroupBox {
                     id: unsharpKernelComboBox
                     Layout.alignment: Qt.AlignRight
                     Layout.preferredWidth: unsharpGaussianSigmaSB.width
-                    model: ["0 (auto)", "3×3", "5×5", "7×7", "9×9", "11×11"]
+                    model: [qsTr("0 (auto)"), qsTr("3×3"), qsTr("5×5"), qsTr("7×7"), qsTr("9×9"), qsTr("11×11")]
                     currentIndex: 1
 
                 }

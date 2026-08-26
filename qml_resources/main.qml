@@ -57,9 +57,7 @@ ApplicationWindow {
 			Layout.fillWidth: true
 			Layout.fillHeight: true
 
-			// Show scrollbars when needed
 			ScrollBar.vertical.policy: contentHeight > height ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff
-			// Clip content to viewport
 			clip: true
 
 			ColumnLayout {
@@ -216,7 +214,7 @@ ApplicationWindow {
 
 				id: deleteDataButton
 				Layout.alignment: Qt.AlignLeft
-				text: qsTr("Delete Data")
+				text: qsTr("Delete Processed Data")
 				enabled: main_operator_backend.processed_data_exists_property && !main_operator_backend.processing_running_property
 				ToolTip.text: _toolTipText
 				ToolTip.delay: AppConfig.toolTipDelay
@@ -262,7 +260,7 @@ ApplicationWindow {
 	Dialog {
 
 		id: deleteConfirmDialog
-		title: qsTr("Delete processed data?")
+		title: qsTr("Delete Processed Data")
 		modal: true
 		parent: Overlay.overlay
 		anchors.centerIn: parent
@@ -273,7 +271,7 @@ ApplicationWindow {
 		}
 
 		Label {
-			text: qsTr("This will permanently delete the processed_images directory\nand the interpolated TFS file next to the selected TFS file.")
+			text: qsTr("Permanently delete the selected stack's processed images\nfolder and its interpolated TFS file?")
 		}
 
 	}

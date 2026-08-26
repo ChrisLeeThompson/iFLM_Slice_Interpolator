@@ -10,15 +10,15 @@ How it works
 ------------
 Each method is a dataclass instance that bundles together everything
 needed to use that method: its display name (for the UI ComboBox) and
-the actual callable(s) that do the work.  The *position* in the list
-IS the index that gets stored in ProcessingParams and passed around.
+the actual callable(s) that do the work.  The position in the list is
+the index that gets stored in ProcessingParams and passed around.
 No module ever needs to know what that index means — it just looks up
 the object at that position and calls what it finds.
 
-Adding a new filter method, for example, is three steps:
-    1. Write the functions in image_filters.py
-    2. Add a FilterMethod(...) entry to IMAGE_FILTER_METHODS here
-    3. Done — the UI picks up the name, the worker picks up the functions.
+Adding a new filter method takes two steps: write the functions in
+image_filters.py and add a FilterMethod(...) entry to
+IMAGE_FILTER_METHODS here — the UI picks up the name and the worker
+picks up the functions.
 
 FilterMethod
 ------------
@@ -43,8 +43,7 @@ InterpolationMethod
 Both current interpolation methods use the exact same spline machinery —
 the only thing that differs is the spline order k.  So the dataclass
 just carries the name and k; slice_interpolator reads k and passes it
-to make_interp_spline.  If a future method needs fundamentally different
-logic, a callable field can be added the same way FilterMethod does it.
+to make_interp_spline.
 """
 
 import numpy as np
@@ -58,7 +57,7 @@ from typing import Callable, List
 
 @dataclass(frozen=True)
 class FilterMethod:
-    """A single background-subtraction method, fully self-contained."""
+    """A single background-subtraction method."""
 
     name: str                                                       # UI display name
 
@@ -77,12 +76,8 @@ class InterpolationMethod:
 
 
 # ---------------------------------------------------------------------------
-# Import the actual functions (after dataclass defs, to avoid circular issues)
+# The concrete functions the registries below bundle together
 # ---------------------------------------------------------------------------
-# These are imported here rather than at module top so that processing_config
-# can be imported by anything without pulling in numpy/cv2/scipy until the
-# lists below are actually accessed.  In practice the imports happen at
-# module load time anyway, but this keeps the intent clear.
 
 from .image_filters import (
     _subtract_background_min_value,
@@ -124,8 +119,8 @@ IMAGE_FILTER_METHODS: List[FilterMethod] = [
 ]
 
 INTERPOLATION_METHODS: List[InterpolationMethod] = [
-    InterpolationMethod(name="Linear Spline", description="Linear interpolation with SciPy", k=1),
-    InterpolationMethod(name="Cubic Spline",  description="Cubic interpolation with SciPy",  k=3),
+    InterpolationMethod(name="Linear Spline", description="Straight-line blend between adjacent slices", k=1),
+    InterpolationMethod(name="Cubic Spline",  description="Smooth curve through neighboring slices",     k=3),
 ]
 
 
@@ -134,12 +129,12 @@ INTERPOLATION_METHODS: List[InterpolationMethod] = [
 # ---------------------------------------------------------------------------
 
 def get_filter_method_names() -> List[str]:
-    """Return display names in registry order — ready for a ComboBox."""
+    """Return filter method names in registry order — ready for a ComboBox."""
     return [m.name for m in IMAGE_FILTER_METHODS]
 
 
 def get_interpolation_method_names() -> List[str]:
-    """Return display names in registry order — ready for a ComboBox."""
+    """Return interpolation method names in registry order — ready for a ComboBox."""
     return [m.name for m in INTERPOLATION_METHODS]
 
 

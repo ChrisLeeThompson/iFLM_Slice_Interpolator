@@ -9,7 +9,7 @@ GroupBox {
 
     Layout.fillWidth: true
 
-    title: qsTr("Image Stack Origin")
+    title: qsTr("TFS File")
 
     background: Rectangle {
         id: mainRectangle
@@ -58,10 +58,7 @@ GroupBox {
                     Layout.alignment: Qt.AlignRight
                     text: qsTr("Browse")
                     enabled: !main_operator_backend.processing_running_property
-                    onClicked: {
-                        directoryPathTextField.placeholderText = qsTr("Loading path...")
-                        pathDialog.open()
-                    }
+                    onClicked: pathDialog.open()
 
                 }
 
@@ -75,17 +72,12 @@ GroupBox {
 
         id: pathDialog
         acceptLabel: qsTr("Select")
-        nameFilters: ["TFS XML File (*.tfs.xml)", "XML files (*.xml)", "All files (*)"]
+        nameFilters: [qsTr("TFS XML files (*.tfs.xml)"), qsTr("XML files (*.xml)"), qsTr("All files (*)")]
         onAccepted: {
             // Pass the URL string as-is - the Python side converts it with
             // QUrl.toLocalFile(), which handles percent-encoding and UNC
             // shares correctly (hand-stripping the file:// prefix does not)
             main_operator_backend.set_tfs_file_path(selectedFile.toString())
-            // Update TextField
-            directoryPathTextField.placeholderText = "iFLM TFS File Path"
-        }
-        onRejected: {
-            directoryPathTextField.placeholderText = "iFLM TFS File Path"
         }
 
     }

@@ -1,7 +1,8 @@
 """
 Processing Parameters
-This module defines the processing parameters dataclass that holds all parameters
-for the image processing workflow.
+
+Defines the dataclass that carries every parameter of the image
+processing workflow.
 """
 
 from dataclasses import dataclass
@@ -9,7 +10,7 @@ from dataclasses import dataclass
 
 @dataclass
 class ProcessingParams:
-    """Container for all image processing parameters."""
+    """Parameters for one processing run."""
 
     image_filter_method_index: int = 0
     interpolation_method_index: int = 0
@@ -18,15 +19,15 @@ class ProcessingParams:
     unsharp_gaussian_sigma: float = 0.5
     unsharp_amount: float = 7.0
     interpolation_factor: int = 2
-    save_as_stack: bool = True                      # If true, single file tiff stack is saved for each channel (along with individual tiff files)
+    save_as_stack: bool = True                      # Also save a single multi-page TIFF stack per channel
     global_background_normalization: bool = False   # Use global background normalization across the stack
-    hot_pixel_filter: bool = False                  # Repair defective camera pixels (persistent defects + per-slice transients) before background subtraction
+    hot_pixel_filter: bool = False                  # Repair defective camera pixels before background subtraction
     hot_pixel_sigma: float = 6.0                    # Detection threshold, in local noise sigma
 
     def get_unsharp_ksize_tuple(self) -> tuple:
-            """
-            Convert kernel size to tuple for OpenCV GaussianBlur.
-    
-            : return: tuple: (0, 0) for auto-calculate mode, or (size, size) for manual mode
-            """
-            return (self.unsharp_kernel_size, self.unsharp_kernel_size)
+        """
+        Convert the kernel size to a tuple for OpenCV GaussianBlur.
+
+        :return: (0, 0) for auto-calculate mode, or (size, size) for manual mode
+        """
+        return (self.unsharp_kernel_size, self.unsharp_kernel_size)

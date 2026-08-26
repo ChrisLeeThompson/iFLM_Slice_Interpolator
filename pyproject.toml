@@ -1,6 +1,6 @@
 [project]
 name = "iFLM Slice Interpolator 2"
-version = "2.2.0"
+version = "2.2.1"
 
 [tool.pyside6-project]
 files = [
@@ -16,7 +16,5 @@ files = [
     "qml_resources/qmldir",
     "qml_resources/qtquickcontrols2.conf",
     "script_assets/catbug_color_2.png",
-    "script_assets/catbug_color_2.svg",
     "script_assets/catbug_grayscale_2.png",
-    "script_assets/catbug_grayscale_2.svg",
     ]

@@ -11,7 +11,7 @@ GroupBox {
 
     Layout.fillWidth: true
 
-    title: qsTr("Interpolation Settings")
+    title: qsTr("Interpolation")
 
     background: Rectangle {
         id: mainRectangle
@@ -70,7 +70,7 @@ GroupBox {
                     id: interpolationMethodLabel
                     Layout.fillWidth: true
                     Layout.alignment: Qt.AlignLeft
-                    text: interpolationMethodComboBox.currentText
+                    text: qsTr("Description")
 
                 }
 

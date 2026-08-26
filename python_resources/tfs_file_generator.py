@@ -1,5 +1,5 @@
 """
-TFS File Generator Module - Version 2
+TFS File Generator Module
 
 Generates a new TFS XML file for interpolated image stacks while preserving
 the exact structure and formatting of the original file.
@@ -10,7 +10,8 @@ Copy the original parsed XML tree, then modify only what needs to change:
   - Per-image <RelativePath>: point to new interpolated TIFF files
   - Per-image <Guid>: generate unique GUID for each interpolated image
   - Per-image <Plane>: set correct plane index
-  - Image ordering: interleave channels by plane (CRITICAL FOR IMPORT)
+  - Image ordering: interleave channels by plane, the ordering TFS Maps
+    requires for import
 """
 
 import logging
@@ -76,9 +77,8 @@ def _generate_tfs_guid() -> str:
     """
     Generate a GUID in TFS format: {xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}
 
-    Returns:
-        str: Formatted UUID with curly braces and lowercase letters,
-             matching the TFS file format
+    :return: UUID with curly braces and lowercase letters, matching the
+        TFS file format
     """
     return f"{{{str(uuid.uuid4()).lower()}}}"
 
@@ -90,9 +90,9 @@ class TFSFileGenerator:
     Takes the original parsed TFS file and creates a modified copy with
     updated focus values and relative paths pointing to the interpolated
     images, while preserving all other metadata exactly.
-    
-    CRITICAL: Maintains proper image ordering (channels interleaved by plane)
-    to match the original TFS file structure.
+
+    Maintains the image ordering TFS Maps requires: channels interleaved
+    by plane.
     """
 
     def __init__(
@@ -115,7 +115,7 @@ class TFSFileGenerator:
         self._channel_dir_names = channel_dir_names
         self._channel_wavelength_tags = channel_wavelength_tags
 
-        # Deep copy the original XML tree so we don't mutate the parser's data
+        # Deep copy the original XML tree so the parser's data is not mutated
         self._tree = deepcopy(original_parser.tree)
         self._root = self._tree.getroot()
 
@@ -130,10 +130,10 @@ class TFSFileGenerator:
         """
         logger.info(f"Generating interpolated TFS file: {output_path.name}")
 
-        # Step 1: Update the top-level <n> element
+        # Step 1: Prepend "Interpolated_" to every ImageMatrix <Name>
         self._update_top_level_name()
 
-        # Step 2: Rebuild ALL images with correct interleaved ordering
+        # Step 2: Rebuild the images with the interleaved ordering
         self._rebuild_all_images_with_correct_ordering()
 
         # Step 3: Write the modified tree to disk
@@ -147,28 +147,25 @@ class TFSFileGenerator:
 
     def _update_top_level_name(self) -> None:
         """
-        Update ALL <Name> elements within ImageMatrix sections to prepend "Interpolated_".
-        
-        This handles both the main stack and any additional ImageMatrix sections (e.g., MIP).
-        
+        Prepend "Interpolated_" to every ImageMatrix <Name> element.
+
+        This covers both the main stack and any additional ImageMatrix
+        sections (e.g. the MIP).
+
         Example: "Image_202508261029_stack_51" → "Interpolated_Image_202508261029_stack_51"
-        Example: "Image_202508261029_stack_51_MIP" → "Interpolated_Image_202508261029_stack_51_MIP"
         """
-        # Find ALL ImageMatrix elements
         image_matrices = self._root.findall('.//ImageMatrix')
-        
+
         if not image_matrices:
             logger.warning("Could not find any ImageMatrix elements in TFS file")
             return
-        
+
         updated_count = 0
         for matrix in image_matrices:
-            # Find the <Name> element directly under this ImageMatrix
             name_elem = matrix.find('Name')
             if name_elem is not None and name_elem.text:
                 original_name = name_elem.text
-                
-                # Only prepend "Interpolated_" if it's not already there
+
                 if not original_name.startswith("Interpolated_"):
                     new_name = f"Interpolated_{original_name}"
                     name_elem.text = new_name
@@ -183,23 +180,14 @@ class TFSFileGenerator:
 
     def _rebuild_all_images_with_correct_ordering(self) -> None:
         """
-        Rebuild the entire Images section with proper ordering.
-        
-        CRITICAL ORDERING RULE:
-        Images must be ordered by PLANE first, then by CHANNEL within each plane.
-        
-        For example with 3 channels and 5 planes:
-          Plane 0: Ch0, Ch1, Ch2
-          Plane 1: Ch0, Ch1, Ch2
-          Plane 2: Ch0, Ch1, Ch2
-          Plane 3: Ch0, Ch1, Ch2
-          Plane 4: Ch0, Ch1, Ch2
-        
-        This matches the original TFS file format.
+        Rebuild the entire Images section in the ordering TFS Maps requires:
+        by plane first, then by channel within each plane.
+
+        For example with 3 channels: plane 0 holds Ch0, Ch1, Ch2; plane 1
+        holds Ch0, Ch1, Ch2; and so on.
         """
         logger.info("Rebuilding images with correct plane/channel ordering")
 
-        # Find the ImageMatrix and Images container
         image_matrix = self._root.find('.//ImageMatrix')
         if image_matrix is None:
             logger.error("Could not find ImageMatrix element in TFS file")
@@ -210,19 +198,17 @@ class TFSFileGenerator:
             logger.error("Could not find Images container in TFS file")
             return
 
-        # Get all channels
         channels = self._original_parser.get_channels()
         if not channels:
             logger.error("No channels found in original TFS file")
             return
 
-        # Build a mapping: {channel_index: template_image_element}
-        # We'll use the first image from each channel as a template
+        # Map each channel index to a template element: the first <Image>
+        # in the original file belonging to that channel.
         channel_templates = {}
         for channel in channels:
             original_images = self._original_parser.get_images_for_channel(channel.index)
             if original_images:
-                # Find the XML element for this image
                 for img_elem in images_container.findall('Image'):
                     channel_elem = img_elem.find('.//Channel')
                     if channel_elem is not None and int(channel_elem.text) == channel.index:
@@ -295,16 +281,13 @@ class TFSFileGenerator:
                     )
                     continue
 
-                # Get the template for this channel
                 template = channel_templates.get(channel_idx)
                 if template is None:
                     logger.warning(f"No template found for channel {channel_idx}")
                     continue
 
-                # Deep copy the template
                 new_img_elem = deepcopy(template)
 
-                # Generate and assign a unique GUID
                 guid_elem = new_img_elem.find('Guid')
                 if guid_elem is not None:
                     guid_elem.text = _generate_tfs_guid()
@@ -312,14 +295,12 @@ class TFSFileGenerator:
                     guid_elem = ET.SubElement(new_img_elem, 'Guid')
                     guid_elem.text = _generate_tfs_guid()
 
-                # Update Plane index
                 plane_elem = new_img_elem.find('.//Plane')
                 if plane_elem is not None:
                     plane_elem.text = str(plane_idx)
                 else:
                     logger.warning(f"No Plane element found for channel {channel_idx}, plane {plane_idx}")
 
-                # Update Focus value
                 focus_value = focus_list[plane_idx]
                 focus_elem = new_img_elem.find('.//Focus')
                 if focus_elem is not None:
@@ -327,7 +308,6 @@ class TFSFileGenerator:
                 else:
                     logger.warning(f"No Focus element found for channel {channel_idx}, plane {plane_idx}")
 
-                # Update RelativePath
                 dir_name = self._channel_dir_names[channel_idx]
                 wavelength_tag = self._channel_wavelength_tags[channel_idx]
                 relative_path_elem = new_img_elem.find('RelativePath')
@@ -339,7 +319,6 @@ class TFSFileGenerator:
                     )
                     relative_path_elem.text = new_relative_path
 
-                # Add the new image to the container
                 images_container.append(new_img_elem)
                 total_images_created += 1
 
@@ -365,17 +344,14 @@ class TFSFileGenerator:
 
         :param output_path: Where to write the file
         """
-        # Register namespaces to preserve prefixes
         for prefix, uri in self._namespaces.items():
             ET.register_namespace(prefix, uri)
 
-        # Remove comment placeholders (empty text nodes left after ET removes comments)
+        # Remove the empty text nodes ElementTree leaves behind where the
+        # original file had XML comments, then re-indent.
         self._clean_whitespace(self._root)
-
-        # Add pretty-printing indentation
         ET.indent(self._tree, space="  ", level=0)
 
-        # Write to file with XML declaration
         self._tree.write(
             str(output_path),
             encoding='utf-8',
@@ -387,18 +363,14 @@ class TFSFileGenerator:
 
     def _clean_whitespace(self, elem):
         """
-        Recursively remove excessive whitespace left by comment removal.
-        
-        ElementTree removes XML comments when parsing but leaves blank lines.
-        This cleans them up.
+        Recursively remove the blank lines ElementTree leaves where the
+        original file had XML comments.
         """
-        # Remove leading/trailing whitespace from text
         if elem.text and elem.text.strip() == '':
             elem.text = None
         if elem.tail and elem.tail.strip() == '':
             elem.tail = None
-        
-        # Recurse into children
+
         for child in elem:
             self._clean_whitespace(child)
 
@@ -415,14 +387,13 @@ def generate_interpolated_tfs_file(
 
     :param original_tfs_path: Path to the original TFS file
     :param original_parser: Parsed original TFS file
-    :param interpolation_factor: Interpolation factor used
+    :param interpolation_factor: Same factor used for image interpolation
     :param channel_dir_names: Map from channel index to directory name
     :param channel_wavelength_tags: Map from channel index to wavelength tag
     :return: Path to the generated TFS file
     """
     output_path = get_interpolated_tfs_path(original_tfs_path)
 
-    # Create the generator and run it
     generator = TFSFileGenerator(
         original_parser=original_parser,
         interpolation_factor=interpolation_factor,

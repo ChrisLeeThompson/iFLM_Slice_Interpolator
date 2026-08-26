@@ -1,13 +1,16 @@
 """
 Worker Thread Module
 
+ProcessingWorker runs the full processing pipeline for every channel of a
+parsed TFS file on a background thread.
+
 Processing order per channel:
     1. Load raw TIFFs from disk into memory
     1b. Hot pixel scan (optional) — folds the whole stack into a persistence
-       vote to locate persistent camera defects, and records per-slice
-       transient detections (cosmic rays, blinking pixels) along the way.
-       Runs before the output directory is cleared, so an aborted scan
-       leaves previous output intact.
+        vote to locate persistent camera defects, and records per-slice
+        transient detections (cosmic rays, blinking pixels) along the way.
+        Runs before the output directory is cleared, so an aborted scan
+        leaves previous output intact.
     2. Filter (hot pixel repair + background subtraction + unsharp mask) —
        yields one slice at a time, each slice written to disk immediately
     3. Interpolate — needs all filtered slices in memory, then yields one
@@ -72,7 +75,7 @@ class ProcessingWorker(QObject):
     status_update   = Signal(str)
     progress_update = Signal(int)
     finished        = Signal()
-    stopped         = Signal()  # Emitted when user requests stop
+    stopped         = Signal()
     error           = Signal(str)
 
     def __init__(
@@ -120,12 +123,8 @@ class ProcessingWorker(QObject):
         """
         Extract directory name, wavelength tag, and reflection flag for a channel.
 
-        Returns
-        -------
-        (dir_name, wavelength_tag, is_reflection)
-            dir_name: Directory name including wavelength (e.g., "Blue_L385", "Refl_L470")
-            wavelength_tag: Wavelength portion for filenames (e.g., "L385", "L470_refl")
-            is_reflection: True if this is a reflection channel
+        :return: (dir_name, wavelength_tag, is_reflection), e.g.
+            ("Blue_L385", "L385", False) or ("Refl_L470", "L470_refl", True)
         """
         # Check if this is a reflection channel (Grey/Gray/Reflection with no
         # wavelength attribute)
@@ -167,10 +166,8 @@ class ProcessingWorker(QObject):
         """
         Entry point — called by QThread.start().  Do not call directly.
 
-        Iterates over every channel in the parsed TFS file and runs the
-        full pipeline for each one.  Emits progress and status signals
-        throughout.  Emits finished() on clean completion or error() if
-        something goes wrong.
+        Routes any exception out of the pipeline to the error signal so
+        the thread can never die silently.
         """
         try:
             self._run_pipeline()
@@ -183,7 +180,12 @@ class ProcessingWorker(QObject):
     # ------------------------------------------------------------------
 
     def _run_pipeline(self):
-        """Top-level pipeline loop over all channels."""
+        """
+        Run the full pipeline for every channel, then generate the TFS file.
+
+        Emits progress and status signals throughout, and exactly one of
+        finished(), stopped(), or error() at the end.
+        """
 
         channels = self._tfs_parser.get_channels()
         num_channels = len(channels)
@@ -217,15 +219,16 @@ class ProcessingWorker(QObject):
             names = ", ".join(p.name for p in missing[:5])
             if len(missing) > 5:
                 names += f", ... (+{len(missing) - 5} more)"
+            noun, verb = ("image", "is") if len(missing) == 1 else ("images", "are")
             raise RuntimeError(
-                f"{len(missing)} source image(s) referenced by the TFS file "
-                f"are missing from disk: {names}"
+                f"{len(missing)} source {noun} referenced by the TFS file "
+                f"{verb} missing from disk: {names}"
             )
 
         work_done = 0
-        last_progress_percent = -1  # Track last emitted percentage to avoid spam
+        last_progress_percent = -1  # only emit the progress signal on change
 
-        # Track channel naming for TFS file generation
+        # Channel naming for TFS file generation
         channel_dir_names: dict[int, str] = {}
         channel_wavelength_tags: dict[int, str] = {}
 
@@ -237,14 +240,10 @@ class ProcessingWorker(QObject):
                 self.stopped.emit()
                 return
 
-            # Extract channel naming info (handles both fluorescence and reflection)
             dir_name, wavelength_tag, is_reflection = self._get_channel_info(channel)
-            
-            # Store for TFS file generation later
             channel_dir_names[channel.index] = dir_name
             channel_wavelength_tags[channel.index] = wavelength_tag
-            
-            # self.status_update.emit(f"Loading images: [{ch_idx + 1}/{num_channels}] {dir_name}")
+
             self.status_update.emit(f"Loading images: {dir_name}")
             logger.info(f"Starting channel {ch_idx + 1}/{num_channels}: {dir_name}")
 
@@ -252,7 +251,6 @@ class ProcessingWorker(QObject):
             image_paths = self._tfs_parser.get_image_paths_for_channel(channel.index)
             if not image_paths:
                 logger.warning(f"No images found for channel '{dir_name}', skipping.")
-                # self.status_update.emit(f"No images: [{ch_idx + 1}/{num_channels}] {dir_name}")
                 self.status_update.emit(f"No images: {dir_name}")
                 continue
 
@@ -268,8 +266,8 @@ class ProcessingWorker(QObject):
             # Deliberately before the rmtree below: if the scan refuses the
             # data (implausible defect fraction) it raises, and the previous
             # run's output for this channel is still on disk untouched.
-            # Emits status only, no progress units — the scan is ~0.6 of the
-            # ~212 work units for a channel, below the bar's 1% resolution.
+            # Emits status only, no progress units — the scan is a small
+            # fraction of a channel's work, below the bar's 1 % resolution.
             hot_pixel_mask: HotPixelMask | None = None
             if self._hot_pixel_filter:
                 self.status_update.emit(f"Hot pixel scan: {dir_name}")
@@ -287,14 +285,14 @@ class ProcessingWorker(QObject):
                         self.status_update.emit(f"Hot pixel scan: {dir_name} z{scan_idx:04d}")
 
                 if hot_pixel_mask is None:
-                    # Only remaining skip reason: constant first frame (short
-                    # stacks now run transient-only) — details in the log
+                    # Skipped only when the first frame is constant (short
+                    # stacks run transient-only) — details in the log
                     self.status_update.emit(f"Hot pixels: {dir_name} scan skipped (see log)")
                 elif not hot_pixel_mask.has_corrections:
                     self.status_update.emit(f"Hot pixels: {dir_name} none found")
                 else:
-                    prefix = "Hot pixels (HIGH)" if hot_pixel_mask.high_count else "Hot pixels"
-                    note = " — follows structure, check mask" if hot_pixel_mask.follows_structure else ""
+                    prefix = "Hot pixels (high)" if hot_pixel_mask.high_count else "Hot pixels"
+                    note = " - follows structure, check the mask file" if hot_pixel_mask.follows_structure else ""
                     self.status_update.emit(
                         f"{prefix}: {dir_name} {hot_pixel_mask.count:,} persistent "
                         f"({hot_pixel_mask.fraction * 100:.4f} %) + "
@@ -334,15 +332,15 @@ class ProcessingWorker(QObject):
                 tifffile.imwrite(str(mask_path), hot_pixel_mask.to_mask_image())
                 logger.info(f"Wrote hot pixel mask: {mask_path}")
 
-            # Companion audit: per-pixel detection counts.  In FIJI, persistent
-            # defects read ~num_slices, blinkers intermediate, cosmic rays 1.
+            # Companion audit: per-pixel detection counts.  In Fiji, persistent
+            # defects read ~num_slices, blinking pixels read intermediate
+            # values, and cosmic rays read 1.
             if hot_pixel_mask is not None and hot_pixel_mask.has_corrections:
                 votes_path = channel_dir / f"hotpixel_votes_{wavelength_tag}.tif"
                 tifffile.imwrite(str(votes_path), hot_pixel_mask.votes)
                 logger.info(f"Wrote hot pixel vote map: {votes_path}")
 
             # --- 3. Filter pass ---
-            # self.status_update.emit(f"Filtering: [{ch_idx + 1}/{num_channels}] {dir_name}")
             self.status_update.emit(f"Filtering: {dir_name}")
 
             filtered_slices: List[np.ndarray] = []
@@ -363,19 +361,16 @@ class ProcessingWorker(QObject):
                     self.stopped.emit()
                     return
 
-                # Write individual filtered TIFF with proper naming
-                # Example: filtered_stack_z0042_L385.tif or filtered_stack_z0042_L470_refl.tif
+                # Example: filtered_stack_z0042_L385.tif
                 filtered_filename = f"filtered_stack_z{slice_idx:04d}_{wavelength_tag}.tif"
                 filtered_path = channel_dir / filtered_filename
                 tifffile.imwrite(str(filtered_path), filtered_image)
 
-                # Status update — show channel and slice number
                 self.status_update.emit(f"Filtering: {dir_name} z{slice_idx:04d}")
 
                 # Keep in memory — interpolator needs the full filtered stack
                 filtered_slices.append(filtered_image)
 
-                # Progress — only emit when percentage actually changes
                 work_done += 1
                 if total_work > 0:
                     current_percent = int(work_done / total_work * 100)
@@ -383,11 +378,9 @@ class ProcessingWorker(QObject):
                         last_progress_percent = current_percent
                         self.progress_update.emit(current_percent)
 
-            # Free raw slices — no longer needed
             del raw_slices
 
             # --- 4. Interpolation pass ---
-            # self.status_update.emit(f"Interpolating: [{ch_idx + 1}/{num_channels}] {dir_name}")
             self.status_update.emit(f"Interpolating: {dir_name}")
 
             # The optional multi-page stack file is streamed one page per
@@ -410,8 +403,7 @@ class ProcessingWorker(QObject):
                         self.stopped.emit()
                         return
 
-                    # Write individual interpolated TIFF with final naming pattern
-                    # Example: interpolated_stack_z0000_L385.tif or interpolated_stack_z0000_L470_refl.tif
+                    # Example: interpolated_stack_z0000_L385.tif
                     interp_filename = f"interpolated_stack_z{slice_idx:04d}_{wavelength_tag}.tif"
                     interp_path = channel_dir / interp_filename
                     tifffile.imwrite(str(interp_path), interpolated_image)
@@ -419,10 +411,8 @@ class ProcessingWorker(QObject):
                     if stack_writer is not None:
                         stack_writer.write(interpolated_image, contiguous=True)
 
-                    # Status update — show channel and slice number
                     self.status_update.emit(f"Interpolating: {dir_name} z{slice_idx:04d}")
 
-                    # Progress — only emit when percentage actually changes
                     work_done += 1
                     if total_work > 0:
                         current_percent = int(work_done / total_work * 100)
@@ -436,7 +426,6 @@ class ProcessingWorker(QObject):
             if stack_writer is not None:
                 logger.info(f"Wrote stack file: {stack_path.name}")
 
-            # Free filtered slices
             del filtered_slices
 
         # --- all channels done, now generate the interpolated TFS file ---
@@ -512,5 +501,5 @@ class ProcessingWorker(QObject):
 
         img = cv2.imdecode(data, cv2.IMREAD_UNCHANGED) if data.size > 0 else None
         if img is None:
-            raise RuntimeError(f"Could not decode image file (corrupt or unsupported format): {path.name}")
+            raise RuntimeError(f"Could not decode image file: {path.name} (corrupt or unsupported format)")
         return img

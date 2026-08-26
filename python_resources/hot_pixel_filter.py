@@ -3,46 +3,46 @@ Hot Pixel Filter
 
 Detects and repairs hot pixels in two tiers:
 
-  * PERSISTENT defects: sensor elements that sit at a fixed (y, x) and read
+  * Persistent defects: sensor elements that sit at a fixed (y, x) and read
     high in essentially every plane of a z-stack.  Found by a stack-wide
-    persistence vote and repaired in EVERY slice - including planes where a
+    persistence vote and repaired in every slice - including planes where a
     bright neighbour or saturation happens to mask the defect.
-  * TRANSIENT events: cosmic rays and RTS ("blinking") pixels that read high
+  * Transient events: cosmic rays and RTS ("blinking") pixels that read high
     in only some planes.  Any per-slice detection that is not in the
     persistent map is repaired only in the slice where it occurred.
 
-Why this module is separate from image_filters.py: it imports only numpy and
-cv2 (no PySide6, no scipy), so every function here can be driven directly
+This module is separate from image_filters.py because it imports only numpy
+and cv2 (no PySide6, no scipy), so every function here can be driven directly
 against a real image stack with no QApplication and no TFS file.
 
 Discriminating statistic
 ------------------------
-Detection in every slice uses the same SPATIAL test:
+Detection in every slice uses the same spatial test:
 
-  1. SPATIAL   excess(p, z) = I(p, z) - max(8 neighbours of p in slice z)
+  1. Spatial   excess(p, z) = I(p, z) - max(8 neighbours of p in slice z)
                A strict local maximum.  Anything at least 2 px wide in any
-               direction - including a 1-px-wide LINE, whose neighbours are
+               direction - including a 1-px-wide line, whose neighbours are
                also on the line - has an equally bright neighbour and scores
                excess ~ 0.  A 3x3 median reference would erase the whole line.
 
-The persistent tier additionally requires a TEMPORAL vote:
+The persistent tier additionally requires a temporal vote:
 
-  2. TEMPORAL  vote(p) = #{ z : excess(p, z) > offset(p, z) + k * scale(p, z) }
+  2. Temporal  vote(p) = #{ z : excess(p, z) > offset(p, z) + k * scale(p, z) }
                hot(p)  = vote(p) >= 0.90 * N
                Real fluorescence cannot do this: defocus spreads a point
                emitter sideways through z, so a genuine feature either fades
                below threshold or widens until a neighbour matches it.
 
 The conjunction is what makes the persistent tier safe to apply everywhere.
-Test 2 alone would also flag a stationary OBJECT (a stuck bead, a dust
+Test 2 alone would also flag a stationary object (a stuck bead, a dust
 speck); test 1 rejects it on size.
 
 Persistence carries ~N independent bits of evidence, so k can be modest and
 still produce essentially no noise-driven false positives.  Worst case, at an
-absurd per-slice false rate of 0.5:
+absurd per-slice false rate of 0.5 on a 71-slice stack (needing 64 votes):
 P(Binom(71, 0.5) >= 64) = 6.3e-13, times 16 Mpixel = 1e-5 false px per frame.
 That binomial argument is what licenses a low k, so _VOTE_FRACTION is a fixed
-module constant and is deliberately NOT exposed in the UI.  The margin is
+module constant and is deliberately not exposed in the UI.  The margin is
 thinner on short stacks - at N = 17 the same tail is 1.4e-4, ~2,200 px on a
 16 Mpixel frame - which is why _MIN_SLICES exists and why the dispersion
 guard below is worth its cost.
@@ -51,18 +51,18 @@ The transient tier rests on the spatial test alone, so its safety is bounded
 differently: at 6 sigma on real iFLM data it flags ~0.13 % of the frame per
 slice, scattered like sensor noise (dispersion ~1.0), not like structure.  A
 false positive costs one strict local maximum flattened to its neighbourhood
-median - darken-only, in one slice - whereas a MISSED spike is amplified
+median - darken-only, in one slice - whereas a missed spike is amplified
 ~3.7x by the default unsharp settings downstream and copied into every
 interpolated plane by the z-spline.  That asymmetry is why transient repair
 is on whenever the filter is on.
 
 Nothing here has units of microns.  The spatial test is pure pixel adjacency
 and the threshold is measured in locally estimated noise sigma, so the filter
-adapts itself to any objective, magnification, or pixel size with no
-configuration.  Do not add an NA / magnification / pixel-size parameter.
+adapts itself to any objective, magnification, or pixel size and needs no
+NA, magnification, or pixel-size parameter.
 
-Known blind spots (documented, not fixed)
------------------------------------------
+Known blind spots
+-----------------
   * A transient masked by a bright neighbour in its own slice is missed in
     that slice.  Persistent defects are immune: the stack-wide map repairs
     them in every plane regardless.
@@ -84,13 +84,13 @@ logger = logging.getLogger(__name__)
 
 
 # Hollow 3x3 structuring element: the zero centre makes cv2.dilate return the
-# maximum of the 8 NEIGHBOURS, excluding the pixel itself.
+# maximum of the 8 neighbours, excluding the pixel itself.
 _NEIGHBOUR_KERNEL = np.array([[1, 1, 1],
                               [1, 0, 1],
                               [1, 1, 1]], dtype=np.uint8)
 
 # Fraction of slices in which a pixel must be a thresholded local maximum.
-# NOT a UI parameter - see the binomial argument in the module docstring.
+# Not a UI parameter - see the binomial argument in the module docstring.
 _VOTE_FRACTION = 0.90
 
 # Below this many slices the persistence evidence is too thin to trust, so
@@ -100,10 +100,10 @@ _VOTE_FRACTION = 0.90
 _MIN_SLICES = 8
 
 # Local offset/scale are estimated on a block grid: area-average into 16x16
-# blocks, take a MEDIAN across a 5x5 neighbourhood of blocks, then upsample.
+# blocks, take a median across a 5x5 neighbourhood of blocks, then upsample.
 # The block median is what makes the estimate robust - a saturated pixel
 # contaminates exactly one block and is outvoted by the other 24.  A plain box
-# mean over the same support is NOT robust: one stuck-at-max pixel inflates
+# mean over the same support is not robust: one stuck-at-max pixel inflates
 # the threshold ~5.7x across its whole neighbourhood and self-masks every weak
 # defect nearby.
 _SCALE_BLOCK = 16
@@ -132,7 +132,7 @@ _ABORT_FRACTION = 0.02           # 2.0 %  -> refuse, write nothing
 # real is being flagged, rising well above 1.5 as real features start being
 # caught, 1.08 on real filter-off iFLM data.
 #
-# The grid must ADAPT to the flagged count, not be fixed: a fixed 16x16 grid
+# The grid must adapt to the flagged count, not be fixed: a fixed 16x16 grid
 # puts 21.7 px/block on a frame with 5,556 defects but only 0.34 px/block on
 # one with 87, where the statistic is pure noise.  Sizing the grid to hold
 # ~_DISPERSION_TARGET_PER_BLOCK keeps it meaningful across three orders of
@@ -150,7 +150,8 @@ class HotPixelMask:
 
     The persistent-tier fields (ys/xs, neighbour tables, excess_floor,
     dispersion, count, fraction, to_mask_image) describe only the stack-wide
-    defect map; the transient tier lives in transient_ys/xs and votes."""
+    defect map; the transient tier lives in transient_ys/xs and votes.
+    """
 
     ys: np.ndarray                  # (K,) row indices of persistent defects
     xs: np.ndarray                  # (K,) column indices
@@ -195,8 +196,8 @@ class HotPixelMask:
 
     @property
     def high_count(self) -> bool:
-        """True when any slice's detection fraction exceeds the warn rail.
-        The worker's status-line (HIGH) prefix reads this so the UI flag and
+        """True when any slice's detection fraction exceeds the warn threshold.
+        The worker's status-line (high) prefix reads this so the UI flag and
         the log warning can never disagree on the threshold."""
         return self.max_slice_fraction > _WARN_FRACTION
 
@@ -258,7 +259,7 @@ def _local_offset_and_scale(excess: np.ndarray,
     Spatially varying centre and spread of the local-maximum excess field.
 
     Both are needed because both track local intensity: shot noise scales as
-    sqrt(I), and E[max of 8 neighbours] sits ~1.4 sigma ABOVE the pixel, so
+    sqrt(I), and E[max of 8 neighbours] sits ~1.4 sigma above the pixel, so
     `excess` is systematically negative and more so where the frame is bright.
     A single global threshold is set by the darkest part of the frame and then
     misapplied to the brightest - which is where the specimen is.
@@ -354,17 +355,15 @@ def scan_hot_pixels(
     recording per-slice detections, then yields the finished mask.
 
     Yields (slice_index, None) once per slice while accumulating, then one
-    final (num_slices, mask).  The worker drives this with the same for-loop
-    idiom it already uses for process_stack and interpolate_stack, so the stop
-    flag is honoured at every fold; only the short finalize tail is
-    uninterruptible.
+    final (num_slices, mask), so a caller iterating with a stop check can
+    cancel at every fold; only the short finalize tail is uninterruptible.
 
     A mask of None as the final yield means "skip hot pixel filtering" - a
     degenerate constant first frame.  Stacks shorter than _MIN_SLICES still
     produce a mask: the persistence vote is disabled (no persistent tier) but
     per-slice transient detections are kept.  The stack is never modified.
 
-    :param slices: Full raw stack for one channel.  NEVER modified.
+    :param slices: Full raw stack for one channel.  Never modified.
     :param threshold_sigma: Per-slice threshold in units of the local scale.
     :yields: (index, None) per slice, then (num_slices, HotPixelMask or None)
     :raises ValueError: on an empty stack or non-2D slices
@@ -373,7 +372,7 @@ def scan_hot_pixels(
     """
     num_slices = len(slices)
     if num_slices == 0:
-        raise ValueError("scan_hot_pixels requires at least one slice")
+        raise ValueError("Hot pixel filtering needs at least one slice")
 
     reference = slices[0]
     if reference.ndim != 2:
@@ -469,12 +468,12 @@ def scan_hot_pixels(
         if det_fraction > _ABORT_FRACTION:
             raise RuntimeError(
                 f"Hot pixel filter flagged {det_ys.size:,} pixels "
-                f"({det_fraction * 100:.2f} % of the frame) in slice {i} at "
-                f"{threshold_sigma:.0f} sigma. A real camera defect map is well "
-                f"under {_ABORT_FRACTION * 100:.0f} %, so the detection threshold "
-                f"is almost certainly wrong for this data. Raise the Hot Pixel "
-                f"Sensitivity or disable the filter. No output has been written "
-                f"for this channel."
+                f"({det_fraction * 100:.2f} % of slice {i}) at "
+                f"{threshold_sigma:.0f} sigma. That is far more than any real "
+                "defect map, so the threshold is wrong for this data. Set "
+                "Hot Pixel Sensitivity to a higher value (fewer detections) "
+                "or disable the filter. The run stopped and no interpolated "
+                "TFS file was written."
             )
         max_slice_fraction = max(max_slice_fraction, det_fraction)
         slice_det_ys.append(det_ys)
@@ -488,15 +487,17 @@ def scan_hot_pixels(
     count = int(ys.size)
     fraction = count / float(height * width)
 
-    # Belt-and-braces: the per-slice rail above nearly subsumes this (a
-    # persistent map is built from per-slice detections), but it costs nothing.
+    # Defensive double-check: the per-slice guard above nearly subsumes this
+    # (a persistent map is built from per-slice detections), but it costs
+    # nothing.
     if fraction > _ABORT_FRACTION:
         raise RuntimeError(
-            f"Hot pixel filter flagged {count:,} pixels ({fraction * 100:.2f} % of "
-            f"the frame) at {threshold_sigma:.0f} sigma. A real camera defect map is "
-            f"well under {_ABORT_FRACTION * 100:.0f} %, so the detection threshold is "
-            f"almost certainly wrong for this data. Raise the Hot Pixel Sensitivity "
-            f"or disable the filter. No output has been written for this channel."
+            f"Hot pixel filter flagged {count:,} persistent pixels "
+            f"({fraction * 100:.2f} % of the frame) at {threshold_sigma:.0f} "
+            "sigma. That is far more than any real defect map, so the "
+            "threshold is wrong for this data. Set Hot Pixel Sensitivity to "
+            "a higher value (fewer detections) or disable the filter. The "
+            "run stopped and no interpolated TFS file was written."
         )
 
     # Transients: per-slice detections minus the persistent set.  Disjoint by
@@ -578,7 +579,7 @@ def correct_hot_pixels(image: np.ndarray, mask: HotPixelMask,
     Two tiers: the persistent map is repaired in every slice; the transient
     detections for slice_index are repaired only here.  slice_index=None
     applies the persistent map alone (useful for diagnostics driving the
-    module directly).  Both tiers read donors from the ORIGINAL image: a
+    module directly).  Both tiers read donors from the original image: a
     transient 8-adjacent to a persistent pixel contributes one contaminated
     donor to the other's median-of-8, which the median absorbs.  The two
     coordinate sets are disjoint by construction, so the repairs never write
@@ -587,20 +588,18 @@ def correct_hot_pixels(image: np.ndarray, mask: HotPixelMask,
     Two deliberate properties:
 
     * The replacement is clamped with np.minimum so a repair can only ever
-      DARKEN a pixel.  The persistent map is stack-derived and applied to
+      darken a pixel.  The persistent map is stack-derived and applied to
       every slice, so where a masked pixel happens to be dark in one plane
-      while its neighbours are bright, an unclamped median would RAISE it -
+      while its neighbours are bright, an unclamped median would raise it -
       writing a value brighter than the sensor measured.  (For a transient in
       its own detection slice the clamp is a mathematical no-op - detection
       required beating the brightest neighbour - but it is kept for
       uniformity.)
 
     * No np.clip.  Every output value is either the original pixel or the
-      median of eight real pixel values from the same frame, so it is in range
-      by construction.  This is a deliberate deviation from the clip idiom in
-      image_filters.py, which exists there because those functions subtract:
-      clipping at 0 here would force every repaired pixel to 0 on an int16
-      image with legitimately negative values.
+      median of eight real pixel values from the same frame, so it is in
+      range by construction; clipping at 0 would instead corrupt int16
+      images with legitimately negative values.
 
     :param image: 2D numpy array
     :param mask: HotPixelMask from scan_hot_pixels
@@ -618,7 +617,7 @@ def correct_hot_pixels(image: np.ndarray, mask: HotPixelMask,
     if slice_index is not None:
         if not 0 <= slice_index < len(mask.transient_ys):
             raise ValueError(
-                f"slice_index {slice_index} out of range for a "
+                f"Slice index {slice_index} is out of range for a "
                 f"{len(mask.transient_ys)}-slice scan"
             )
         tys = mask.transient_ys[slice_index]

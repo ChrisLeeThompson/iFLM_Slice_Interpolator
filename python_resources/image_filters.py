@@ -8,7 +8,7 @@ for the worker thread.
 
 Processing pipeline per slice:
     0. Hot pixel correction (optional, if a mask was supplied)
-    1. Background subtraction (Minimum Value or Gaussian)
+    1. Background subtraction (Minimum Value, Gaussian, or Rolling Background)
     2. Unsharp masking (if amount > 0)
 
 Hot pixel correction runs first because unsharp masking amplifies an isolated
@@ -19,13 +19,14 @@ hot_pixel_filter.py; this module only applies a mask that was already scanned.
 Background methods:
     - Minimum Value: subtracts the per-slice minimum pixel value
     - Gaussian: estimates background with a heavy Gaussian blur, then subtracts
+    - Rolling Background: estimates a smoothed local lower envelope, then
+      subtracts
 
 Global background normalization (optional):
-    When enabled, Gaussian and Minimum Value methods compute a global
-    statistic across the stack first, then apply a consistent subtraction
-    per slice. This requires a two-pass approach: the first pass computes
-    the global value (yielding nothing), and the second pass yields
-    processed slices.
+    When enabled, each method computes a global statistic across the stack
+    first, then applies a consistent subtraction per slice. This requires a
+    two-pass approach: the first pass computes the global value (yielding
+    nothing), and the second pass yields processed slices.
 """
 
 import logging
@@ -107,7 +108,7 @@ def _rolling_background_estimate(float_img: np.ndarray, radius: float) -> np.nda
     INTER_AREA-average into blocks of ~radius/2 px, take a low percentile
     across a 5x5 neighbourhood of blocks, upsample, and smooth.  Same
     block-map idiom as hot_pixel_filter._block_map, but with a low percentile
-    instead of a median: the estimate tracks the dim FLOOR of each region, so
+    instead of a median: the estimate tracks the dim floor of each region, so
     a bright specimen feature cannot drag the background up underneath itself
     the way it drags up a Gaussian mean.
     """
@@ -133,10 +134,10 @@ def _subtract_background_rolling(image: np.ndarray, radius: float) -> np.ndarray
     """
     Estimate the background as a smoothed local lower envelope and subtract it.
 
-    The Gaussian method subtracts the local MEAN, which by construction sits
+    The Gaussian method subtracts the local mean, which by construction sits
     in the middle of the intensity distribution — roughly half of every
     neighbourhood goes negative and is clipped to zero, leaving an edge-image
-    look.  The lower envelope sits UNDER the signal, so real features keep
+    look.  The lower envelope sits under the signal, so real features keep
     their intensity and only the illumination gradient is removed.
 
     :param image: 2D numpy array (grayscale)
@@ -256,7 +257,7 @@ def _apply_unsharp_mask(image: np.ndarray, ksize: tuple, sigma: float, amount: f
     sharpened = float_img + (amount * mask)
     sharpened = _to_original_dtype(sharpened, orig_dtype)
 
-    kernel_mode = "auto" if ksize == (0, 0) else f"{ksize[0]}×{ksize[1]}"
+    kernel_mode = "auto" if ksize == (0, 0) else f"{ksize[0]}x{ksize[1]}"
     logger.debug(f"Unsharp mask: kernel={kernel_mode}, sigma={sigma}, amount={amount}")
     return sharpened
 
@@ -287,18 +288,21 @@ def process_stack(
     :param method: A FilterMethod instance from processing_config.IMAGE_FILTER_METHODS.
         Carries subtract(), compute_global(), and apply_global() — no index
         look-up needed here.
-    :param gaussian_sigma: Sigma for Gaussian background (ignored by methods
-        that don't use it — the FilterMethod lambdas absorb it silently)
+    :param gaussian_sigma: Scale of the background estimate: the blur sigma
+        for the Gaussian method, the radius in pixels for Rolling Background;
+        ignored by Minimum Value
+    :param unsharp_ksize: Kernel size for the unsharp mask blur; (0, 0) lets
+        OpenCV derive it from unsharp_sigma
     :param unsharp_sigma: Sigma for unsharp mask Gaussian blur
     :param unsharp_amount: Sharpening strength (0 disables unsharp masking)
     :param global_background_normalization: If True, run a first pass to
         compute a global statistic, then use it for consistent subtraction
-    :param hot_pixel_mask: Optional HotPixelMask from hot_pixel_filter.
-        scan_hot_pixels.  When supplied, persistent defects are repaired in
-        every slice and transient detections in the slice where they occurred,
-        before background subtraction.  `slices` must be the same list (same
-        order and length) the scan consumed, since slice indices map 1:1 - the
-        worker guarantees this.  None disables the step.
+    :param hot_pixel_mask: Optional HotPixelMask from
+        hot_pixel_filter.scan_hot_pixels.  When supplied, persistent defects
+        are repaired in every slice and transient detections in the slice
+        where they occurred, before background subtraction.  `slices` must be
+        the same list (same order and length) the scan consumed, since slice
+        indices map 1:1 - the worker guarantees this.  None disables the step.
     :yields: (slice_index, processed_image) for each plane in order
     """
     num_slices = len(slices)
@@ -315,13 +319,13 @@ def process_stack(
     # ------------------------------------------------------------------
     # First pass: compute global statistic if needed (no yields here)
     # ------------------------------------------------------------------
-    # Note: the global statistic is computed on the UNCORRECTED slices.  That
+    # Note: the global statistic is computed on the uncorrected slices.  That
     # is safe for a hot-pixel (bright-only) mask - _compute_global_min takes a
     # minimum, which a bright pixel can never set, and
     # _compute_global_gaussian_median takes the median of a heavy blur, which
     # ~0.1% of pixels in the upper tail cannot move.  Both tiers are bright-
     # only (transients included), so the reasoning covers them equally.  It
-    # INVERTS if a cold/dead-pixel branch is ever added: a pixel stuck at 0
+    # inverts if a cold/dead-pixel branch is ever added: a pixel stuck at 0
     # does set the minimum, and the correction would have to run before this
     # pass.
     global_stat = None
