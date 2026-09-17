@@ -1,10 +1,15 @@
 # iFLM Slice Interpolator
 
-<!-- Full documentation: https://<site>/scripts/iflm_slice_interpolator/ (enable this link when the site is live) -->
+> [!NOTE]
+> **Full documentation:** https://chrisleethompson.github.io/scripts/iflm_slice_interpolator/
 
 A PySide6/QML desktop utility that filters and z-interpolates image stacks produced by the Thermo Scientific Integrated Fluorescence Microscope (iFLM) software. Load the stack's `.tfs.xml` file, and the script repairs, background-subtracts, sharpens, and interpolates the images into virtual slices, then writes a new `.tfs.xml` file that imports directly into Thermo Scientific Maps.
 
 This script is experimental. Many of the features are still being explored and tested.
+
+## Documentation
+
+Full documentation: https://chrisleethompson.github.io/scripts/iflm_slice_interpolator/
 
 ## Features
 
