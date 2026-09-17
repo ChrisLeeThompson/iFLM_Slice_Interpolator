@@ -1,5 +1,9 @@
-PySide6>=6.5
-numpy>=1.24
-opencv-python>=4.8
-scipy>=1.10
-tifffile>=2023.7.10
+# iFLM Slice Interpolator - Python dependencies (Python 3.11+).
+# Version floors are the versions in the Thermo Fisher AutoScript 4.14
+# Python environment (Python 3.11.14), where the app is developed and tested.
+
+PySide6>=6.7.1
+numpy>=2.2.5
+opencv-python>=4.8.1
+scipy>=1.15.3
+tifffile>=2025.3.13
